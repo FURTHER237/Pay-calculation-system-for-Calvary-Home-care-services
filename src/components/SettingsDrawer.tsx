@@ -187,6 +187,40 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                 />
                 Claim Australian Tax-Free Threshold ($18,200)
               </label>
+              <label className="inline-flex items-center gap-2 font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={config.isShiftworkerForLeave}
+                  onChange={(e) =>
+                    onChangeConfig({ ...config, isShiftworkerForLeave: e.target.checked })
+                  }
+                  className="h-4 w-4 accent-indigo-600"
+                />
+                Shiftworker for 5-Wk Annual Leave (Cl 29(c): &gt;4h on ≥10 wkends OR ≥8×24h care)
+              </label>
+              <label className="flex flex-col gap-1 pt-1 text-xs">
+                <span className="font-medium text-slate-600">
+                  Prior 4-Week Avg Uniform Allowance on Leave-Only Weeks ($0 = $1.23/shift, max $
+                  {config.allowances.uniformWeeklyCap.toFixed(2)}/wk)
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  max={config.allowances.uniformWeeklyCap}
+                  step={0.01}
+                  value={config.prior4WeekAverageUniformAllowance}
+                  onChange={(e) =>
+                    onChangeConfig({
+                      ...config,
+                      prior4WeekAverageUniformAllowance: Math.min(
+                        config.allowances.uniformWeeklyCap,
+                        Math.max(0, Number(e.target.value) || 0)
+                      ),
+                    })
+                  }
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-mono text-xs font-bold text-slate-900"
+                />
+              </label>
             </div>
           </div>
 

@@ -31,6 +31,9 @@ function getBadgeClasses(badge: string): string {
   if (badge.includes('Afternoon') || badge.includes('Night')) {
     return 'bg-indigo-100 text-indigo-800 border-indigo-200';
   }
+  if (badge.includes('Annual Leave') || badge.includes('PH on Leave')) {
+    return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+  }
   if (badge.includes('Sleepover') || badge.includes('24h Care')) {
     return 'bg-teal-100 text-teal-800 border-teal-200';
   }
@@ -51,6 +54,8 @@ function getBlockShortLabel(type: string): string {
       return '24h Care';
     case 'REMOTE_WORK':
       return 'Remote';
+    case 'ANNUAL_LEAVE':
+      return 'Annual Leave';
     default:
       return type;
   }

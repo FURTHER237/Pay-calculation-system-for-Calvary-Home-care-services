@@ -45,6 +45,9 @@ function createNewBlock(blockType: BlockType, existingBlocks: WorkBlock[]): Work
   if (blockType === 'SLEEPOVER') {
     startTime = '22:00';
     endTime = '06:00';
+  } else if (blockType === 'ANNUAL_LEAVE') {
+    startTime = '09:00';
+    endTime = '17:00';
   } else if (blockType === 'ACTIVE_WORK_DURING_SLEEPOVER') {
     startTime = '02:00';
     endTime = '02:30';
@@ -403,6 +406,13 @@ export const DayEditorModal: React.FC<DayEditorModalProps> = ({
                 >
                   + Remote
                 </button>
+                <button
+                  type="button"
+                  onClick={() => addBlock('ANNUAL_LEAVE')}
+                  className="inline-flex items-center gap-1 rounded-lg border border-teal-200 bg-teal-50 px-2 py-1.5 text-xs font-medium text-teal-800 hover:bg-teal-100"
+                >
+                  + Annual Leave
+                </button>
               </div>
             </div>
 
@@ -608,7 +618,8 @@ export const DayEditorModal: React.FC<DayEditorModalProps> = ({
                           />
                         </label>
 
-                        {block.blockType === 'REGULAR_CLIENT' && (
+                        {(block.blockType === 'REGULAR_CLIENT' ||
+                          block.blockType === 'ANNUAL_LEAVE') && (
                           <>
                             <label className="flex flex-col gap-1 text-xs">
                               <span className="text-slate-500">Unpaid Break (min)</span>
@@ -627,22 +638,24 @@ export const DayEditorModal: React.FC<DayEditorModalProps> = ({
                               />
                             </label>
 
-                            <label className="flex flex-col gap-1 text-xs">
-                              <span className="text-slate-500">Paid Meal (min)</span>
-                              <input
-                                type="number"
-                                min={0}
-                                step={5}
-                                value={block.paidClientMealMinutes || ''}
-                                placeholder="0"
-                                onChange={(e) =>
-                                  updateBlock(block.id, {
-                                    paidClientMealMinutes: Math.max(0, Number(e.target.value) || 0),
-                                  })
-                                }
-                                className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs font-semibold text-slate-900"
-                              />
-                            </label>
+                            {block.blockType === 'REGULAR_CLIENT' && (
+                              <label className="flex flex-col gap-1 text-xs">
+                                <span className="text-slate-500">Paid Meal (min)</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={5}
+                                  value={block.paidClientMealMinutes || ''}
+                                  placeholder="0"
+                                  onChange={(e) =>
+                                    updateBlock(block.id, {
+                                      paidClientMealMinutes: Math.max(0, Number(e.target.value) || 0),
+                                    })
+                                  }
+                                  className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs font-semibold text-slate-900"
+                                />
+                              </label>
+                            )}
                           </>
                         )}
 
@@ -691,7 +704,8 @@ export const DayEditorModal: React.FC<DayEditorModalProps> = ({
 
                       <div className="mt-2.5 flex flex-wrap items-center gap-4 text-xs">
                         {block.blockType !== 'SLEEPOVER' &&
-                          block.blockType !== 'REMOTE_WORK' && (
+                          block.blockType !== 'REMOTE_WORK' &&
+                          block.blockType !== 'ANNUAL_LEAVE' && (
                             <label className="inline-flex items-center gap-1.5 font-medium text-slate-700">
                               <input
                                 type="checkbox"

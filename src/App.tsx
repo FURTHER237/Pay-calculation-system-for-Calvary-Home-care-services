@@ -204,6 +204,13 @@ export const App: React.FC = () => {
           onChangeReassignedMakeUpHours={(hours) =>
             setFortnight((prev) => ({ ...prev, reassignedMakeUpHours: hours }))
           }
+          cashedOutAnnualLeaveHours={fortnight.cashedOutAnnualLeaveHours ?? 0}
+          onChangeCashedOutAnnualLeaveHours={(hours) =>
+            setFortnight((prev) => ({ ...prev, cashedOutAnnualLeaveHours: hours }))
+          }
+          onToggleShiftworkerForLeave={(val) =>
+            setConfig((prev) => ({ ...prev, isShiftworkerForLeave: val }))
+          }
           onToggleTaxFreeThreshold={(val) =>
             setConfig((prev) => ({ ...prev, claimTaxFreeThreshold: val }))
           }

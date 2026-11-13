@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   AlertCircle,
+  Calendar,
   CheckCircle2,
   ClipboardCheck,
   DollarSign,
@@ -18,6 +19,9 @@ interface PayslipDashboardProps {
   config: PayrollConfig;
   reassignedMakeUpHours: number;
   onChangeReassignedMakeUpHours: (hours: number) => void;
+  cashedOutAnnualLeaveHours: number;
+  onChangeCashedOutAnnualLeaveHours: (hours: number) => void;
+  onToggleShiftworkerForLeave: (val: boolean) => void;
   onToggleTaxFreeThreshold: (val: boolean) => void;
   onSelectDay: (dayIndex: number) => void;
 }
@@ -27,6 +31,9 @@ export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
   config,
   reassignedMakeUpHours,
   onChangeReassignedMakeUpHours,
+  cashedOutAnnualLeaveHours,
+  onChangeCashedOutAnnualLeaveHours,
+  onToggleShiftworkerForLeave,
   onToggleTaxFreeThreshold,
   onSelectDay,
 }) => {
@@ -201,6 +208,152 @@ export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
         </div>
       </div>
 
+      {/* Leave Accruals & Annual Leave / Cashing Out Panel (Clauses 28(c)(ii) & 29) */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-emerald-800">
+              <Calendar className="h-4 w-4 text-emerald-600" />
+              Leave Accruals This Fortnight (Cl 29 &amp; 32)
+            </div>
+            <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700">
+              Ordinary Base: {payslip.ordinaryTimeWorkedForAccrual.toFixed(2)}h
+            </span>
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+            <div
+              className={`rounded-xl border p-2.5 ${
+                !config.isShiftworkerForLeave
+                  ? 'border-emerald-300 bg-emerald-50/70'
+                  : 'border-slate-200 bg-slate-50/70'
+              }`}
+            >
+              <div className="text-[11px] text-slate-600">Standard AL (4 wks)</div>
+              <div className="mt-0.5 font-mono text-base font-bold text-slate-900">
+                {payslip.accrualStandardHours.toFixed(2)}h
+              </div>
+              <div className="text-[10px] text-slate-500">152 / 1976 rate</div>
+            </div>
+            <div
+              className={`rounded-xl border p-2.5 ${
+                config.isShiftworkerForLeave
+                  ? 'border-emerald-300 bg-emerald-50/70'
+                  : 'border-slate-200 bg-slate-50/70'
+              }`}
+            >
+              <div className="text-[11px] text-slate-600">Shiftworker AL (5 wks)</div>
+              <div className="mt-0.5 font-mono text-base font-bold text-slate-900">
+                {payslip.accrualShiftworkerHours.toFixed(2)}h
+              </div>
+              <div className="text-[10px] text-slate-500">190 / 1976 rate</div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
+              <div className="text-[11px] text-slate-600">Personal / Carer&apos;s</div>
+              <div className="mt-0.5 font-mono text-base font-bold text-slate-900">
+                {payslip.accrualPersonalLeaveHours.toFixed(2)}h
+              </div>
+              <div className="text-[10px] text-slate-500">76 / 1976 rate</div>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 text-[11px] text-slate-600">
+            <div>
+              Shiftworker Qualifiers (Cl 29(c)):{' '}
+              <strong className="text-slate-900">{payslip.qualifyingWeekendsWorked}</strong>{' '}
+              weekend(s) &gt;4h (target &ge;10/yr) &bull;{' '}
+              <strong className="text-slate-900">{payslip.qualifying24HrShiftsCount}</strong> 24h
+              care (target &ge;8/yr)
+            </div>
+            <label className="no-print inline-flex cursor-pointer items-center gap-1.5 font-semibold text-emerald-800">
+              <input
+                type="checkbox"
+                checked={config.isShiftworkerForLeave}
+                onChange={(e) => onToggleShiftworkerForLeave(e.target.checked)}
+                className="h-3.5 w-3.5 accent-emerald-600"
+              />
+              5-Wk Shiftworker
+            </label>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-bold uppercase tracking-wide text-slate-700">
+              Annual Leave Loading Test &amp; Cash-Out (Cl 29(h), 29(j))
+            </span>
+            {payslip.annualLeaveHoursSavedByPh > 0 && (
+              <span className="rounded-full bg-purple-100 px-2.5 py-0.5 text-[11px] font-semibold text-purple-800">
+                PH on Leave: {payslip.annualLeaveHoursSavedByPh.toFixed(2)}h saved (0h deducted)
+              </span>
+            )}
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs">
+              <div className="flex items-center justify-between text-slate-600">
+                <span>Leave Deducted:</span>
+                <strong className="font-mono text-slate-900">
+                  {payslip.annualLeaveHoursTaken.toFixed(2)}h
+                </strong>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-slate-600">
+                <span>Opt 1 (17.5%):</span>
+                <span
+                  className={`font-mono font-semibold ${
+                    payslip.annualLeaveLoadingWinner === 'LOADING_175'
+                      ? 'text-emerald-700'
+                      : 'text-slate-700'
+                  }`}
+                >
+                  ${payslip.annualLeaveLoadingOption1Amount.toFixed(2)}
+                </span>
+              </div>
+              <div className="mt-0.5 flex items-center justify-between text-slate-600">
+                <span>Opt 2 (Roster Penalties):</span>
+                <span
+                  className={`font-mono font-semibold ${
+                    payslip.annualLeaveLoadingWinner === 'PENALTY_EQUIVALENT'
+                      ? 'text-emerald-700'
+                      : 'text-slate-700'
+                  }`}
+                >
+                  ${payslip.annualLeaveLoadingOption2Amount.toFixed(2)}
+                </span>
+              </div>
+              <div className="mt-1 text-[10px] font-medium text-slate-500">
+                {payslip.annualLeaveLoadingWinner === 'PENALTY_EQUIVALENT'
+                  ? 'Winner: Higher Rostered Shift/Weekend Penalties'
+                  : payslip.annualLeaveLoadingWinner === 'LOADING_175'
+                    ? 'Winner: Standard 17.5% Leave Loading'
+                    : 'Add Annual Leave blocks to evaluate Higher-Of rule.'}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-2.5 text-xs">
+              <label className="flex items-center justify-between gap-2 font-semibold text-slate-800">
+                <span>Cash Out Leave (hrs):</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={cashedOutAnnualLeaveHours || ''}
+                  placeholder="0"
+                  onChange={(e) =>
+                    onChangeCashedOutAnnualLeaveHours(Math.max(0, Number(e.target.value) || 0))
+                  }
+                  className="no-print w-20 rounded-md border border-amber-300 bg-white px-2 py-1 text-right font-mono text-xs font-bold text-slate-900"
+                />
+              </label>
+              <p className="mt-1.5 text-[11px] leading-snug text-amber-900">
+                <strong>Cl 29(j)(i)(A):</strong> Cash-out pays Base 100% + 17.5% loading. Requires
+                written agreement &amp; at least <strong>4 weeks</strong> remaining leave balance.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Tabs Container */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="no-print flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
@@ -273,7 +426,14 @@ export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
                 <tbody className="divide-y divide-slate-100">
                   {payslip.groupedRows.map((row, idx) => (
                     <tr key={`${row.code}-${idx}`} className="hover:bg-slate-50/80">
-                      <td className="px-4 py-2.5 font-semibold text-slate-900">{row.label}</td>
+                      <td className="px-4 py-2.5 font-semibold text-slate-900">
+                        <div>{row.label}</div>
+                        {row.notes && (
+                          <div className="mt-0.5 text-[11px] font-normal text-slate-500">
+                            {row.notes}
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5">
                         <span
                           className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold ${

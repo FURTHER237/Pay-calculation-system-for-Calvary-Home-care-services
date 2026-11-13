@@ -14,6 +14,8 @@ export const DEFAULT_PAYROLL_CONFIG: PayrollConfig = {
   superRate: 0.12,
   claimTaxFreeThreshold: true,
   firstAidEnabled: false,
+  isShiftworkerForLeave: false,
+  prior4WeekAverageUniformAllowance: 0,
   allowances: {
     brokenShift1Break: 18.34,
     brokenShift2Breaks: 24.27,
@@ -49,6 +51,7 @@ export const BLOCK_TYPE_LABELS: Record<string, string> = {
   ACTIVE_WORK_DURING_SLEEPOVER: 'Active Work During Sleepover',
   CARE_24HR: '24-Hour Care Shift',
   REMOTE_WORK: 'Remote / Phone Work',
+  ANNUAL_LEAVE: 'Annual Leave (Paid)',
 };
 
 export const REMOTE_CONTEXT_LABELS: Record<string, string> = {

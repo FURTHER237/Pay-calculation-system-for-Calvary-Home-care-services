@@ -8,7 +8,8 @@ export type BlockType =
   | 'SLEEPOVER'
   | 'ACTIVE_WORK_DURING_SLEEPOVER'
   | 'CARE_24HR'
-  | 'REMOTE_WORK';
+  | 'REMOTE_WORK'
+  | 'ANNUAL_LEAVE';
 
 export type RemoteContext =
   | 'NOT_ON_CALL'
@@ -25,6 +26,8 @@ export interface PayrollConfig {
   superRate: number; // default 0.12 (12%)
   claimTaxFreeThreshold: boolean;
   firstAidEnabled: boolean;
+  isShiftworkerForLeave: boolean;
+  prior4WeekAverageUniformAllowance: number;
   allowances: {
     brokenShift1Break: number; // $18.34
     brokenShift2Breaks: number; // $24.27
@@ -78,6 +81,7 @@ export interface FortnightPeriod {
   endDate: string; // YYYY-MM-DD (Sunday of Week 2)
   days: DayRecord[]; // 14 items
   reassignedMakeUpHours?: number; // Cancelled hours reassigned within current fortnight
+  cashedOutAnnualLeaveHours?: number; // Hours of annual leave cashed out (Clause 29(j))
 }
 
 export type PayCode =
@@ -107,6 +111,12 @@ export type PayCode =
   | 'CLIENT_CANCELLED_ORDINARY'
   | 'SLEEPOVER_4H_TOPUP'
   | 'GUARANTEED_HOURS_TOPUP'
+  | 'PH_NOT_WORKED_ORDINARY'
+  | 'ANNUAL_LEAVE_BASE'
+  | 'ANNUAL_LEAVE_LOADING_175'
+  | 'ANNUAL_LEAVE_LOADING_PENALTY'
+  | 'ANNUAL_LEAVE_CASHED_OUT_BASE'
+  | 'ANNUAL_LEAVE_CASHED_OUT_LOADING'
   | 'ALLOWANCE_BROKEN_1'
   | 'ALLOWANCE_BROKEN_2'
   | 'ALLOWANCE_SLEEPOVER'
@@ -176,6 +186,7 @@ export interface PayslipSummaryRow {
   multiplier: number;
   amount: number;
   isOte: boolean;
+  notes?: string;
 }
 
 export interface DiscrepancyClauseHint {
@@ -210,6 +221,18 @@ export interface PayslipResult {
   week2Hours: number;
   week1Gross: number;
   week2Gross: number;
+  annualLeaveHoursTaken: number;
+  annualLeaveHoursSavedByPh: number;
+  annualLeaveLoadingOption1Amount: number;
+  annualLeaveLoadingOption2Amount: number;
+  annualLeaveLoadingWinner: 'NONE' | 'LOADING_175' | 'PENALTY_EQUIVALENT';
+  cashedOutAnnualLeaveHours: number;
+  ordinaryTimeWorkedForAccrual: number;
+  accrualStandardHours: number;
+  accrualShiftworkerHours: number;
+  accrualPersonalLeaveHours: number;
+  qualifyingWeekendsWorked: number;
+  qualifying24HrShiftsCount: number;
   discrepancyHints: DiscrepancyClauseHint[];
 }
 

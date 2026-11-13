@@ -391,4 +391,117 @@ describe('Calvary Home Care Award Payroll Engine', () => {
     // Worked (8 + 2 = 10h) + Un-reassigned Cancelled (2h) = 12h -> Shortfall still 8.0h
     expect(resReassigned.guaranteedHoursShortfall).toBe(8.0);
   });
+
+  it('Annual Leave Rule A: Public Holiday override pays 100% Ordinary Rate with 0h leave deducted', () => {
+    const fortnight = createEmptyFortnight('2026-11-09');
+    fortnight.days[0].isPublicHoliday = true;
+    fortnight.days[0].workBlocks = [
+      makeBlock({ blockType: 'ANNUAL_LEAVE', startTime: '09:00', endTime: '17:00' }),
+    ];
+
+    const res = calculateFortnight(fortnight, DEFAULT_PAYROLL_CONFIG);
+    expect(res.annualLeaveHoursTaken).toBe(0);
+    expect(res.annualLeaveHoursSavedByPh).toBe(8.0);
+    expect(res.days[0].badges).toContain('PH on Leave -> 100% Ord (0h Deducted)');
+    const phItem = res.days[0].lineItems.find((i) => i.code === 'PH_NOT_WORKED_ORDINARY');
+    expect(phItem).toBeDefined();
+    expect(phItem?.amount).toBeCloseTo(8 * DEFAULT_PAYROLL_CONFIG.ordinaryRate, 2);
+    expect(res.annualLeaveLoadingWinner).toBe('NONE');
+  });
+
+  it('Annual Leave Rule B: Higher-Of Loading picks 17.5% for daytime Mon-Fri vs Roster Penalties when higher', () => {
+    // Case 1: Daytime Mon-Fri 09:00-17:00 -> Option 2 = $0, Option 1 = 17.5% wins
+    const fnDaytime = createEmptyFortnight('2026-11-09');
+    fnDaytime.days[0].workBlocks = [
+      makeBlock({ blockType: 'ANNUAL_LEAVE', startTime: '09:00', endTime: '17:00' }),
+    ];
+    const res1 = calculateFortnight(fnDaytime, DEFAULT_PAYROLL_CONFIG);
+    expect(res1.annualLeaveHoursTaken).toBe(8.0);
+    expect(res1.annualLeaveLoadingWinner).toBe('LOADING_175');
+    expect(res1.annualLeaveLoadingOption1Amount).toBeCloseTo(
+      8 * DEFAULT_PAYROLL_CONFIG.ordinaryRate * 0.175,
+      2
+    );
+    expect(res1.annualLeaveLoadingOption2Amount).toBe(0);
+    expect(res1.groupedRows.find((r) => r.code === 'ANNUAL_LEAVE_LOADING_175')).toBeDefined();
+
+    // Case 2: Saturday 8h leave (+50%) + Mon afternoon ending 21:00 (+12.5%) -> Option 2 wins
+    const fnPenalty = createEmptyFortnight('2026-11-09');
+    fnPenalty.days[0].workBlocks = [
+      makeBlock({ blockType: 'ANNUAL_LEAVE', startTime: '13:00', endTime: '21:00' }), // +12.5%
+    ];
+    fnPenalty.days[5].workBlocks = [
+      makeBlock({ blockType: 'ANNUAL_LEAVE', startTime: '09:00', endTime: '17:00' }), // Sat +50%
+    ];
+    const res2 = calculateFortnight(fnPenalty, DEFAULT_PAYROLL_CONFIG);
+    expect(res2.annualLeaveLoadingWinner).toBe('PENALTY_EQUIVALENT');
+    expect(res2.annualLeaveLoadingOption2Amount).toBeCloseTo(
+      8 * DEFAULT_PAYROLL_CONFIG.ordinaryRate * (0.125 + 0.5),
+      2
+    );
+    expect(res2.groupedRows.find((r) => r.code === 'ANNUAL_LEAVE_LOADING_PENALTY')).toBeDefined();
+  });
+
+  it('Annual Leave Rules C & D: Satisfies Guaranteed Hours without triggering OT/broken/rest breach; Uniform paid & Laundry excluded', () => {
+    const config: PayrollConfig = {
+      ...DEFAULT_PAYROLL_CONFIG,
+      employmentType: 'FT',
+      contractedGuaranteedHours: 76,
+      prior4WeekAverageUniformAllowance: 5.5,
+    };
+    const fortnight = createEmptyFortnight('2026-11-09');
+    // Week 1: 5 days x 8h Annual Leave (40h leave-only week -> uses prior 4-week uniform avg $5.50)
+    for (let d = 0; d < 5; d++) {
+      fortnight.days[d].workBlocks = [
+        makeBlock({ blockType: 'ANNUAL_LEAVE', startTime: '08:00', endTime: '16:00' }),
+      ];
+    }
+    // Week 2: 5 days x 7.6h worked (38h) -> total ordinary + leave = 78h (>76h if leave counted toward OT, but Cl 29 says NO OT!)
+    for (let d = 7; d < 12; d++) {
+      fortnight.days[d].workBlocks = [
+        makeBlock({ blockType: 'REGULAR_CLIENT', startTime: '09:00', endTime: '16:36' }),
+      ];
+    }
+
+    const res = calculateFortnight(fortnight, config);
+    expect(res.totalOvertimeHours).toBe(0);
+    expect(res.guaranteedHoursShortfall).toBe(0);
+    // Uniform: Week 1 leave-only uses $5.50 override; Week 2 (5 worked shifts * $1.23 = $6.15) -> total $11.65
+    const uniformRow = res.groupedRows.find((r) => r.code === 'ALLOWANCE_UNIFORM');
+    expect(uniformRow?.amount).toBeCloseTo(5.5 + 5 * 1.23, 2);
+    // Laundry: only Week 2's 5 worked shifts -> Week 1 leave gets $0 Laundry; Week 2 capped at $1.49
+    const laundryRow = res.groupedRows.find((r) => r.code === 'ALLOWANCE_LAUNDRY');
+    expect(laundryRow?.amount).toBeCloseTo(1.49, 2);
+  });
+
+  it('Annual Leave Rules E & F: Leave Cashing Out + Standard/Shiftworker/Personal Accruals & Weekend >4h Tracker', () => {
+    const fortnight = createEmptyFortnight('2026-11-09');
+    fortnight.cashedOutAnnualLeaveHours = 10;
+    // Day 0 (Mon): 8h Annual Leave
+    fortnight.days[0].workBlocks = [
+      makeBlock({ blockType: 'ANNUAL_LEAVE', startTime: '09:00', endTime: '17:00' }),
+    ];
+    // Day 5 (Sat W1): 5h regular client (>4h weekend qualifier = 1)
+    fortnight.days[5].workBlocks = [
+      makeBlock({ blockType: 'REGULAR_CLIENT', startTime: '09:00', endTime: '14:00' }),
+    ];
+    // Day 13 (Sun W2): 3h regular client (<=4h so does NOT qualify as >4h weekend)
+    fortnight.days[13].workBlocks = [
+      makeBlock({ blockType: 'REGULAR_CLIENT', startTime: '09:00', endTime: '12:00' }),
+    ];
+
+    const res = calculateFortnight(fortnight, DEFAULT_PAYROLL_CONFIG);
+    // Cash-out Base + 17.5% Loading
+    const cashBase = res.groupedRows.find((r) => r.code === 'ANNUAL_LEAVE_CASHED_OUT_BASE');
+    const cashLoad = res.groupedRows.find((r) => r.code === 'ANNUAL_LEAVE_CASHED_OUT_LOADING');
+    expect(cashBase?.amount).toBeCloseTo(10 * DEFAULT_PAYROLL_CONFIG.ordinaryRate, 2);
+    expect(cashLoad?.amount).toBeCloseTo(10 * DEFAULT_PAYROLL_CONFIG.ordinaryRate * 0.175, 2);
+
+    // Ordinary accrual base = 8 (AL) + 5 (Sat) + 3 (Sun) = 16h
+    expect(res.ordinaryTimeWorkedForAccrual).toBeCloseTo(16.0, 2);
+    expect(res.accrualStandardHours).toBeCloseTo(16 * (152 / 1976), 2);
+    expect(res.accrualShiftworkerHours).toBeCloseTo(16 * (190 / 1976), 2);
+    expect(res.accrualPersonalLeaveHours).toBeCloseTo(16 * (76 / 1976), 2);
+    expect(res.qualifyingWeekendsWorked).toBe(1);
+  });
 });

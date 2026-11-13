@@ -261,6 +261,54 @@ const PAY_CODE_META: Record<
     isOte: true,
     isTaxable: true,
   },
+  PH_NOT_WORKED_ORDINARY: {
+    label: 'Public Holiday Not Worked (Ordinary Rate 100%)',
+    category: 'ORDINARY',
+    clauseRef: 'Clause 29(f) & 30(b)(i)',
+    unitLabel: 'hrs',
+    isOte: true,
+    isTaxable: true,
+  },
+  ANNUAL_LEAVE_BASE: {
+    label: 'Annual Leave (Base 100%)',
+    category: 'ORDINARY',
+    clauseRef: 'Clause 29(h)(i)',
+    unitLabel: 'hrs',
+    isOte: true,
+    isTaxable: true,
+  },
+  ANNUAL_LEAVE_LOADING_175: {
+    label: 'Annual Leave Loading (17.5%)',
+    category: 'PENALTY',
+    clauseRef: 'Clause 29(h)(ii)',
+    unitLabel: 'hrs',
+    isOte: false,
+    isTaxable: true,
+  },
+  ANNUAL_LEAVE_LOADING_PENALTY: {
+    label: 'Annual Leave Loading (Shift/Weekend Penalty Equivalent - Higher Of Rule)',
+    category: 'PENALTY',
+    clauseRef: 'Clause 29(h)(ii)',
+    unitLabel: 'hrs',
+    isOte: false,
+    isTaxable: true,
+  },
+  ANNUAL_LEAVE_CASHED_OUT_BASE: {
+    label: 'Cashed Out Annual Leave (Base 100%)',
+    category: 'TOPUP',
+    clauseRef: 'Clause 29(j)',
+    unitLabel: 'hrs',
+    isOte: false,
+    isTaxable: true,
+  },
+  ANNUAL_LEAVE_CASHED_OUT_LOADING: {
+    label: 'Cashed Out Annual Leave Loading (17.5%)',
+    category: 'PENALTY',
+    clauseRef: 'Clause 29(j)',
+    unitLabel: 'hrs',
+    isOte: false,
+    isTaxable: true,
+  },
   ALLOWANCE_BROKEN_1: {
     label: 'Broken Shift Allowance (1 Unpaid Break)',
     category: 'ALLOWANCE',
@@ -478,6 +526,8 @@ export function calculateFortnight(
     number,
     Array<{ block: WorkBlock; hours: number }>
   >();
+  const annualLeaveBlocksByDay = new Map<number, AbsBlock[]>();
+  let qualifying24HrShiftsCount = 0;
 
   for (let d = 0; d < days.length; d++) {
     const dayOrigin = d * 1440;
@@ -496,6 +546,26 @@ export function calculateFortnight(
           cancelledBlocksByDay.set(d, list);
         }
         continue;
+      }
+
+      if (block.blockType === 'ANNUAL_LEAVE') {
+        if (workedHours > 0) {
+          const list = annualLeaveBlocksByDay.get(d) ?? [];
+          list.push({
+            block,
+            dayIndex: d,
+            startAbs,
+            endAbs,
+            rawHours,
+            workedHours,
+          });
+          annualLeaveBlocksByDay.set(d, list);
+        }
+        continue;
+      }
+
+      if (block.blockType === 'CARE_24HR') {
+        qualifying24HrShiftsCount += 1;
       }
 
       allAbsBlocks.push({
@@ -769,6 +839,9 @@ export function calculateFortnight(
   let totalOvertimeHours = 0;
   let totalCancelledHours = 0;
   let remainingReassignedMakeUp = Math.max(0, fortnight.reassignedMakeUpHours || 0);
+  let annualLeaveHoursTaken = 0;
+  let annualLeaveHoursSavedByPh = 0;
+  let annualLeaveLoadingOption2Raw = 0;
 
   const dailyOvertimeUsed = new Array<number>(14).fill(0);
   const dailyClientOrdinaryUsed = new Array<number>(14).fill(0);
@@ -778,6 +851,8 @@ export function calculateFortnight(
 
   // Track weekly totals for Uniform, Laundry, First Aid caps
   const weekWorkedHours = [0, 0];
+  const weekHasAnnualLeave = [false, false];
+  const weekHasPhysicalWorked = [false, false];
   const weekUniformClaims: Array<{ dayIndex: number; date: string; week: number }> = [];
   const weekLaundryClaims: Array<{ dayIndex: number; date: string; week: number }> = [];
 
@@ -1276,6 +1351,78 @@ export function calculateFortnight(
       );
     }
 
+    // Rule A & Rule B: Annual Leave (Clause 29) & Public Holiday Override (Clause 29(f) & 30(b)(i))
+    const dayAnnualLeaveBlocks = annualLeaveBlocksByDay.get(d) ?? [];
+    for (const al of dayAnnualLeaveBlocks) {
+      weekHasAnnualLeave[weekIdx] = true;
+      const dayOrigin = d * 1440;
+      const startInDay = al.startAbs - dayOrigin;
+      const endInDay = al.endAbs - dayOrigin;
+      const alSlices = splitInterval(al.startAbs, al.endAbs);
+
+      for (const slice of alSlices) {
+        const sliceHours =
+          al.rawHours > 0
+            ? (((slice.endAbs - slice.startAbs) / 60) / al.rawHours) * al.workedHours
+            : 0;
+        if (sliceHours <= 0) continue;
+
+        const { dayOfWeek: sliceDow, isPublicHoliday: slicePh } = getSliceDayInfo(
+          slice.startAbs,
+          days
+        );
+
+        if (slicePh) {
+          // Rule A: Public Holiday on Annual Leave -> 100% Ordinary Rate, 0h Leave Deducted
+          dayLineItems.push(
+            makeLineItem(
+              nextId('phnl'),
+              'PH_NOT_WORKED_ORDINARY',
+              sliceHours,
+              config.ordinaryRate,
+              1.0,
+              day.date,
+              `Public Holiday on Annual Leave (${al.block.startTime}–${al.block.endTime}) — 0h Leave Deducted`
+            )
+          );
+          annualLeaveHoursSavedByPh += sliceHours;
+          totalOrdinaryAndTravelHours += sliceHours;
+          badges.push('PH on Leave -> 100% Ord (0h Deducted)');
+          autoDetectionMessages.push(
+            `Public Holiday on Annual Leave -> Paid at 100% Ordinary Rate (0h Leave Deducted)`
+          );
+        } else {
+          // Rule B: Valid Annual Leave Base (100%) + accumulate Option 2 Penalty Equivalent
+          dayLineItems.push(
+            makeLineItem(
+              nextId('alb'),
+              'ANNUAL_LEAVE_BASE',
+              sliceHours,
+              config.ordinaryRate,
+              1.0,
+              day.date,
+              `Annual Leave (${al.block.startTime}–${al.block.endTime})`
+            )
+          );
+          annualLeaveHoursTaken += sliceHours;
+          totalOrdinaryAndTravelHours += sliceHours;
+
+          let penaltyAdder = 0;
+          if (sliceDow === 6) {
+            penaltyAdder = 1.0; // Sunday +100%
+          } else if (sliceDow === 5) {
+            penaltyAdder = 0.5; // Saturday +50%
+          } else if (endInDay > 1440 || startInDay < 360) {
+            penaltyAdder = 0.15; // Mon-Fri Night +15%
+          } else if (endInDay > 1200 && endInDay <= 1440) {
+            penaltyAdder = 0.125; // Mon-Fri Afternoon +12.5%
+          }
+          annualLeaveLoadingOption2Raw += sliceHours * config.ordinaryRate * penaltyAdder;
+          badges.push('Annual Leave');
+        }
+      }
+    }
+
     // Sleepover Allowances & 4-Hour Top-Up
     const daySleepovers = allAbsBlocks.filter(
       (b) => b.dayIndex === d && b.block.blockType === 'SLEEPOVER'
@@ -1632,12 +1779,21 @@ export function calculateFortnight(
       );
     }
 
-    // Track Uniform / Laundry claims (evaluated with weekly caps after day loop)
-    const defaultClaim = day.workBlocks.some((b) => (b.status ?? 'WORKED') === 'WORKED');
+    // Track Uniform / Laundry claims (Rule D: Uniform payable on Annual Leave, Laundry excluded)
+    const hasPhysicalWorkedOnDay = day.workBlocks.some(
+      (b) => (b.status ?? 'WORKED') === 'WORKED' && b.blockType !== 'ANNUAL_LEAVE'
+    );
+    const hasUniformEligibleOnDay = day.workBlocks.some(
+      (b) => (b.status ?? 'WORKED') === 'WORKED'
+    );
+    if (hasPhysicalWorkedOnDay) {
+      weekHasPhysicalWorked[weekIdx] = true;
+    }
+
     const effectiveUniformClaimed =
-      day.uniformClaimed !== undefined ? day.uniformClaimed : defaultClaim;
+      day.uniformClaimed !== undefined ? day.uniformClaimed : hasUniformEligibleOnDay;
     const effectiveLaundryClaimed =
-      day.laundryClaimed !== undefined ? day.laundryClaimed : defaultClaim;
+      day.laundryClaimed !== undefined ? day.laundryClaimed : hasPhysicalWorkedOnDay;
 
     if (effectiveUniformClaimed) {
       weekUniformClaims.push({ dayIndex: d, date: day.date, week: weekIdx });
@@ -1677,7 +1833,33 @@ export function calculateFortnight(
   // Step 5: Weekly Uniform & Laundry Caps + First Aid Allowance
   for (const wk of [0, 1]) {
     const uClaims = weekUniformClaims.filter((c) => c.week === wk);
-    if (uClaims.length > 0 && config.allowances.uniformPerShift > 0) {
+    const usePrior4WeekAvg =
+      config.prior4WeekAverageUniformAllowance > 0 &&
+      weekHasAnnualLeave[wk] &&
+      !weekHasPhysicalWorked[wk];
+
+    if (usePrior4WeekAvg) {
+      const avgAmt = roundCurrency(
+        Math.min(config.allowances.uniformWeeklyCap, config.prior4WeekAverageUniformAllowance)
+      );
+      if (avgAmt > 0) {
+        const targetDayIndex = uClaims[0]?.dayIndex ?? wk * 7;
+        const item = makeLineItem(
+          nextId('uni'),
+          'ALLOWANCE_UNIFORM',
+          1,
+          avgAmt,
+          1,
+          days[targetDayIndex]?.date,
+          `Week ${wk + 1} 4-week preceding average during Annual Leave (Cl 28(c)(ii))`
+        );
+        dayResults[targetDayIndex].lineItems.push(item);
+        dayResults[targetDayIndex].grossPay = roundCurrency(
+          dayResults[targetDayIndex].grossPay + item.amount
+        );
+        allLineItems.push(item);
+      }
+    } else if (uClaims.length > 0 && config.allowances.uniformPerShift > 0) {
       const rawTotal = uClaims.length * config.allowances.uniformPerShift;
       const cappedTotal = Math.min(config.allowances.uniformWeeklyCap, rawTotal);
       const effectivePerShift = cappedTotal / uClaims.length;
@@ -1778,6 +1960,78 @@ export function calculateFortnight(
     }
   }
 
+  // Step 5b: Annual Leave Loading ("Higher Of" Rule - Clause 29(h)) & Cashing Out (Clause 29(j))
+  const annualLeaveLoadingOption1Amount = roundCurrency(
+    annualLeaveHoursTaken * config.ordinaryRate * 0.175
+  );
+  const annualLeaveLoadingOption2Amount = roundCurrency(annualLeaveLoadingOption2Raw);
+  let annualLeaveLoadingWinner: 'NONE' | 'LOADING_175' | 'PENALTY_EQUIVALENT' = 'NONE';
+
+  if (annualLeaveHoursTaken > 0) {
+    if (annualLeaveLoadingOption2Amount > annualLeaveLoadingOption1Amount) {
+      annualLeaveLoadingWinner = 'PENALTY_EQUIVALENT';
+      const effMult = roundHours(
+        annualLeaveLoadingOption2Amount / (annualLeaveHoursTaken * config.ordinaryRate)
+      );
+      const loadingItem = makeLineItem(
+        nextId('alload'),
+        'ANNUAL_LEAVE_LOADING_PENALTY',
+        annualLeaveHoursTaken,
+        config.ordinaryRate,
+        effMult,
+        undefined,
+        `Higher Of Rule: Shift/Weekend Penalties ($${annualLeaveLoadingOption2Amount.toFixed(
+          2
+        )}) > 17.5% Loading ($${annualLeaveLoadingOption1Amount.toFixed(2)})`
+      );
+      loadingItem.amount = annualLeaveLoadingOption2Amount;
+      allLineItems.push(loadingItem);
+    } else {
+      annualLeaveLoadingWinner = 'LOADING_175';
+      const loadingItem = makeLineItem(
+        nextId('alload'),
+        'ANNUAL_LEAVE_LOADING_175',
+        annualLeaveHoursTaken,
+        config.ordinaryRate,
+        0.175,
+        undefined,
+        `Higher Of Rule: 17.5% Loading ($${annualLeaveLoadingOption1Amount.toFixed(
+          2
+        )}) >= Shift/Weekend Penalties ($${annualLeaveLoadingOption2Amount.toFixed(2)})`
+      );
+      loadingItem.amount = annualLeaveLoadingOption1Amount;
+      allLineItems.push(loadingItem);
+    }
+  }
+
+  const cashedOutAnnualLeaveHours = roundHours(
+    Math.max(0, fortnight.cashedOutAnnualLeaveHours || 0)
+  );
+  if (cashedOutAnnualLeaveHours > 0) {
+    allLineItems.push(
+      makeLineItem(
+        nextId('cashb'),
+        'ANNUAL_LEAVE_CASHED_OUT_BASE',
+        cashedOutAnnualLeaveHours,
+        config.ordinaryRate,
+        1.0,
+        undefined,
+        'Clause 29(j) Cashed Out Annual Leave (Base 100%)'
+      )
+    );
+    allLineItems.push(
+      makeLineItem(
+        nextId('cashl'),
+        'ANNUAL_LEAVE_CASHED_OUT_LOADING',
+        cashedOutAnnualLeaveHours,
+        config.ordinaryRate,
+        0.175,
+        undefined,
+        'Clause 29(j) Cashed Out Annual Leave Loading (17.5%)'
+      )
+    );
+  }
+
   // Step 6: Rule 9 - Guaranteed Hours Shortfall Top-Up (Clause 13(c) & 19(c))
   const reassignedMakeUpHours = roundHours(
     Math.min(totalCancelledHours, Math.max(0, fortnight.reassignedMakeUpHours || 0))
@@ -1833,6 +2087,7 @@ export function calculateFortnight(
         multiplier: item.multiplier,
         amount: item.amount,
         isOte: item.isOte,
+        notes: item.notes,
       });
     }
   }
@@ -1984,6 +2239,67 @@ export function calculateFortnight(
     });
   }
 
+  // Rule F: Fortnightly Leave Accruals & Weekend Shiftworker Qualifier Tracker
+  const ACCRUAL_ORD_CODES = new Set<PayCode>([
+    'BASE_ORDINARY',
+    'AFTERNOON_SHIFT',
+    'NIGHT_SHIFT',
+    'SATURDAY',
+    'SUNDAY',
+    'PUBLIC_HOLIDAY',
+    'TRAVEL_ORDINARY',
+    'TRAVEL_AFTERNOON',
+    'TRAVEL_NIGHT',
+    'TRAVEL_SATURDAY',
+    'TRAVEL_SUNDAY',
+    'TRAVEL_PH',
+    'MIN_ENGAGEMENT_TOPUP',
+    'BROKEN_MIN_PERIOD_TOPUP',
+    'SLEEPOVER_4H_TOPUP',
+    'CARE_24HR_155',
+    'REMOTE_WORK',
+    'ANNUAL_LEAVE_BASE',
+    'PH_NOT_WORKED_ORDINARY',
+  ]);
+
+  const ordinaryTimeWorkedForAccrual = roundHours(
+    allLineItems
+      .filter((i) => ACCRUAL_ORD_CODES.has(i.code))
+      .reduce((s, i) => s + i.units, 0)
+  );
+
+  const accrualStandardHours = roundHours(ordinaryTimeWorkedForAccrual * (152 / 1976));
+  const accrualShiftworkerHours = roundHours(ordinaryTimeWorkedForAccrual * (190 / 1976));
+  const accrualPersonalLeaveHours = roundHours(ordinaryTimeWorkedForAccrual * (76 / 1976));
+
+  const WEEKEND_WORKED_CODES = new Set<PayCode>([
+    'BASE_ORDINARY',
+    'AFTERNOON_SHIFT',
+    'NIGHT_SHIFT',
+    'SATURDAY',
+    'SUNDAY',
+    'PUBLIC_HOLIDAY',
+    'TRAVEL_ORDINARY',
+    'TRAVEL_AFTERNOON',
+    'TRAVEL_NIGHT',
+    'TRAVEL_SATURDAY',
+    'TRAVEL_SUNDAY',
+    'TRAVEL_PH',
+    'CARE_24HR_155',
+    'MIN_ENGAGEMENT_TOPUP',
+    'BROKEN_MIN_PERIOD_TOPUP',
+  ]);
+  const w1Dates = new Set([days[5]?.date, days[6]?.date]);
+  const w2Dates = new Set([days[12]?.date, days[13]?.date]);
+  let w1WeekendOrd = 0;
+  let w2WeekendOrd = 0;
+  for (const item of allLineItems) {
+    if (!WEEKEND_WORKED_CODES.has(item.code) || !item.dayDate) continue;
+    if (w1Dates.has(item.dayDate)) w1WeekendOrd += item.units;
+    else if (w2Dates.has(item.dayDate)) w2WeekendOrd += item.units;
+  }
+  const qualifyingWeekendsWorked = (w1WeekendOrd > 4.0 ? 1 : 0) + (w2WeekendOrd > 4.0 ? 1 : 0);
+
   return {
     days: dayResults,
     lineItems: allLineItems,
@@ -2009,6 +2325,18 @@ export function calculateFortnight(
     week2Hours: roundHours(weekWorkedHours[1]),
     week1Gross,
     week2Gross,
+    annualLeaveHoursTaken: roundHours(annualLeaveHoursTaken),
+    annualLeaveHoursSavedByPh: roundHours(annualLeaveHoursSavedByPh),
+    annualLeaveLoadingOption1Amount,
+    annualLeaveLoadingOption2Amount,
+    annualLeaveLoadingWinner,
+    cashedOutAnnualLeaveHours,
+    ordinaryTimeWorkedForAccrual,
+    accrualStandardHours,
+    accrualShiftworkerHours,
+    accrualPersonalLeaveHours,
+    qualifyingWeekendsWorked,
+    qualifying24HrShiftsCount,
     discrepancyHints,
   };
 }
