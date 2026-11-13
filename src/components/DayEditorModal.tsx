@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import {
   AlertTriangle,
+  Car,
   ChevronLeft,
   ChevronRight,
   Info,
@@ -23,6 +24,7 @@ import {
   OnCallType,
   RemoteContext,
   WorkBlock,
+  WorkBlockStatus,
 } from '../types/payroll';
 
 interface DayEditorModalProps {
@@ -73,6 +75,7 @@ function createNewBlock(blockType: BlockType, existingBlocks: WorkBlock[]): Work
   return {
     id: `blk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     blockType,
+    status: 'WORKED',
     startTime,
     endTime,
     unpaidMealBreakMinutes: 0,
@@ -82,6 +85,9 @@ function createNewBlock(blockType: BlockType, existingBlocks: WorkBlock[]): Work
     remoteContext: 'ON_CALL_DAY_6AM_10PM',
     rosteredHours: 0,
     care24ActiveHours: blockType === 'CARE_24HR' ? 8 : undefined,
+    travelMinutes: 0,
+    travelSeconds: 0,
+    travelKms: 0,
   };
 }
 
@@ -117,11 +123,27 @@ export const DayEditorModal: React.FC<DayEditorModalProps> = ({
   };
 
   const removeBlock = (blockId: string) => {
-    onUpdateDay(dayIndex, (prev) => ({
-      ...prev,
-      workBlocks: prev.workBlocks.filter((b) => b.id !== blockId),
-    }));
+    onUpdateDay(dayIndex, (prev) => {
+      const remaining = prev.workBlocks.filter((b) => b.id !== blockId);
+      let seenFirstClient = false;
+      const normalized = remaining.map((b) => {
+        if (b.blockType === 'REGULAR_CLIENT' && !seenFirstClient) {
+          seenFirstClient = true;
+          return { ...b, travelMinutes: 0, travelSeconds: 0, travelKms: 0 };
+        }
+        return b;
+      });
+      return {
+        ...prev,
+        workBlocks: normalized,
+      };
+    });
   };
+
+  const shiftTravelKmsTotal = day.workBlocks.reduce(
+    (s, b) => s + Math.max(0, b.travelKms || 0),
+    0
+  );
 
   return (
     <div className="no-print fixed inset-0 z-50 flex justify-end bg-slate-900/45 backdrop-blur-xs">
@@ -259,7 +281,14 @@ export const DayEditorModal: React.FC<DayEditorModalProps> = ({
               </label>
 
               <label className="flex flex-col gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800">
-                <span className="text-slate-500">Inter-Client Kilometres (km)</span>
+                <span className="text-slate-500">
+                  Extra Inter-Client KM
+                  {shiftTravelKmsTotal > 0 && (
+                    <span className="ml-1 text-[10px] font-semibold text-indigo-600">
+                      (+{shiftTravelKmsTotal}km from shifts)
+                    </span>
+                  )}
+                </span>
                 <input
                   type="number"
                   min={0}
@@ -358,14 +387,7 @@ export const DayEditorModal: React.FC<DayEditorModalProps> = ({
                   onClick={() => addBlock('REGULAR_CLIENT')}
                   className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
                 >
-                  <Plus className="h-3.5 w-3.5" /> Add Work Block
-                </button>
-                <button
-                  type="button"
-                  onClick={() => addBlock('TRAVEL_BETWEEN_CLIENTS')}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  + Travel
+                  <Plus className="h-3.5 w-3.5" /> Add Client Shift
                 </button>
                 <button
                   type="button"
@@ -374,75 +396,192 @@ export const DayEditorModal: React.FC<DayEditorModalProps> = ({
                 >
                   + Sleepover
                 </button>
+                <button
+                  type="button"
+                  onClick={() => addBlock('REMOTE_WORK')}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  + Remote
+                </button>
               </div>
             </div>
 
             {day.workBlocks.length === 0 ? (
               <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-                No work blocks on this day. Click <strong>Add Work Block</strong> above to log a
-                client shift, travel time, sleepover, 24h care, or remote work.
+                No work blocks on this day. Click <strong>Add Client Shift</strong> above to log a
+                shift (travel time in min/sec &amp; km appears before each subsequent shift).
               </div>
             ) : (
               <div className="space-y-3">
-                {day.workBlocks.map((block, idx) => {
-                  const { startMin, endMin, crossesMidnight } = resolveShiftMinutes(
-                    block.startTime,
-                    block.endTime
-                  );
-                  const rawHours = (endMin - startMin) / 60;
-                  const netHours = Math.max(0, rawHours - (block.unpaidMealBreakMinutes || 0) / 60);
+                {(() => {
+                  const clientBlockIds = day.workBlocks
+                    .filter(
+                      (b) =>
+                        b.blockType === 'REGULAR_CLIENT' && (b.status ?? 'WORKED') === 'WORKED'
+                    )
+                    .map((b) => b.id);
 
-                  return (
-                    <div
-                      key={block.id}
-                      className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-xs"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-                        <div className="flex items-center gap-2">
-                          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-100 text-[11px] font-bold text-slate-700">
-                            {idx + 1}
-                          </span>
-                          <select
-                            value={block.blockType}
-                            onChange={(e) => {
-                              const nextType = e.target.value as BlockType;
-                              updateBlock(block.id, {
-                                blockType: nextType,
-                                care24ActiveHours:
-                                  nextType === 'CARE_24HR'
-                                    ? block.care24ActiveHours ?? 8
-                                    : block.care24ActiveHours,
-                              });
-                            }}
-                            className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-semibold text-slate-900 outline-none focus:border-indigo-500"
-                          >
-                            {Object.entries(BLOCK_TYPE_LABELS).map(([val, label]) => (
-                              <option key={val} value={val}>
-                                {label}
-                              </option>
-                            ))}
-                          </select>
-                          {crossesMidnight && (
-                            <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-800">
-                              Crosses Midnight
+                  return day.workBlocks.map((block, idx) => {
+                    const isCancelled = (block.status ?? 'WORKED') === 'CLIENT_CANCELLED';
+                    const { startMin, endMin, crossesMidnight } = resolveShiftMinutes(
+                      block.startTime,
+                      block.endTime
+                    );
+                    const rawHours = (endMin - startMin) / 60;
+                    const netHours = Math.max(
+                      0,
+                      rawHours - (block.unpaidMealBreakMinutes || 0) / 60
+                    );
+                    const clientShiftIndex = clientBlockIds.indexOf(block.id);
+                    const showPreShiftTravel =
+                      !isCancelled &&
+                      block.blockType === 'REGULAR_CLIENT' &&
+                      clientShiftIndex >= 1;
+
+                    return (
+                      <div
+                        key={block.id}
+                        className={`rounded-xl border p-3.5 shadow-xs ${
+                          isCancelled
+                            ? 'border-amber-300 bg-amber-50/50'
+                            : 'border-slate-200 bg-white'
+                        }`}
+                      >
+                        {showPreShiftTravel && (
+                          <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50/70 p-2.5">
+                            <div className="mb-1.5 flex items-center justify-between text-[11px] font-bold text-sky-900">
+                              <span className="inline-flex items-center gap-1.5">
+                                <Car className="h-3.5 w-3.5 text-sky-600" />
+                                Travel Before Shift {clientShiftIndex + 1} (from previous client)
+                              </span>
+                              <span className="font-mono text-[10px] font-semibold text-sky-700">
+                                {block.travelMinutes || 0}m {block.travelSeconds || 0}s •{' '}
+                                {block.travelKms || 0} km
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2">
+                              <label className="flex flex-col gap-0.5 text-[11px]">
+                                <span className="text-sky-800">Minutes</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={block.travelMinutes ?? 0}
+                                  onChange={(e) =>
+                                    updateBlock(block.id, {
+                                      travelMinutes: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+                                    })
+                                  }
+                                  className="rounded border border-sky-200 bg-white px-2 py-1 font-mono text-xs font-semibold text-slate-900"
+                                />
+                              </label>
+                              <label className="flex flex-col gap-0.5 text-[11px]">
+                                <span className="text-sky-800">Seconds (0–59)</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={59}
+                                  step={1}
+                                  value={block.travelSeconds ?? 0}
+                                  onChange={(e) =>
+                                    updateBlock(block.id, {
+                                      travelSeconds: Math.min(
+                                        59,
+                                        Math.max(0, Math.floor(Number(e.target.value) || 0))
+                                      ),
+                                    })
+                                  }
+                                  className="rounded border border-sky-200 bg-white px-2 py-1 font-mono text-xs font-semibold text-slate-900"
+                                />
+                              </label>
+                              <label className="flex flex-col gap-0.5 text-[11px]">
+                                <span className="text-sky-800">Travel KM</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={0.5}
+                                  value={block.travelKms ?? 0}
+                                  onChange={(e) =>
+                                    updateBlock(block.id, {
+                                      travelKms: Math.max(0, Number(e.target.value) || 0),
+                                    })
+                                  }
+                                  className="rounded border border-sky-200 bg-white px-2 py-1 font-mono text-xs font-semibold text-slate-900"
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-100 text-[11px] font-bold text-slate-700">
+                              {idx + 1}
                             </span>
-                          )}
-                        </div>
+                            <select
+                              value={block.blockType}
+                              onChange={(e) => {
+                                const nextType = e.target.value as BlockType;
+                                updateBlock(block.id, {
+                                  blockType: nextType,
+                                  care24ActiveHours:
+                                    nextType === 'CARE_24HR'
+                                      ? block.care24ActiveHours ?? 8
+                                      : block.care24ActiveHours,
+                                });
+                              }}
+                              className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-semibold text-slate-900 outline-none focus:border-indigo-500"
+                            >
+                              {Object.entries(BLOCK_TYPE_LABELS)
+                                .filter(
+                                  ([val]) =>
+                                    val !== 'TRAVEL_BETWEEN_CLIENTS' ||
+                                    block.blockType === 'TRAVEL_BETWEEN_CLIENTS'
+                                )
+                                .map(([val, label]) => (
+                                  <option key={val} value={val}>
+                                    {label}
+                                  </option>
+                                ))}
+                            </select>
+                            {crossesMidnight && (
+                              <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-800">
+                                Crosses Midnight
+                              </span>
+                            )}
+                          </div>
 
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-slate-600">
-                            Net: {netHours.toFixed(2)}h
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removeBlock(block.id)}
-                            className="rounded p-1 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
-                            title="Delete block"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={block.status ?? 'WORKED'}
+                              onChange={(e) =>
+                                updateBlock(block.id, {
+                                  status: e.target.value as WorkBlockStatus,
+                                })
+                              }
+                              title="Shift attendance status (Clause 19(c) Client Cancellation)"
+                              className={`rounded-md border px-2 py-0.5 text-[11px] font-bold outline-none ${
+                                isCancelled
+                                  ? 'border-amber-300 bg-amber-100 text-amber-900'
+                                  : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                              }`}
+                            >
+                              <option value="WORKED">Worked</option>
+                              <option value="CLIENT_CANCELLED">Client Cancelled</option>
+                            </select>
+                            <span className="text-xs font-semibold text-slate-600">
+                              Net: {netHours.toFixed(2)}h
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeBlock(block.id)}
+                              className="rounded p-1 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+                              title="Delete block"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
                         </div>
-                      </div>
 
                       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
                         <label className="flex flex-col gap-1 text-xs">
@@ -603,8 +742,9 @@ export const DayEditorModal: React.FC<DayEditorModalProps> = ({
                         )}
                       </div>
                     </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
               </div>
             )}
           </div>

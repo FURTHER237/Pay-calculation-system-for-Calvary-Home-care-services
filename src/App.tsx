@@ -200,6 +200,10 @@ export const App: React.FC = () => {
         <PayslipDashboard
           payslip={payslip}
           config={config}
+          reassignedMakeUpHours={fortnight.reassignedMakeUpHours ?? 0}
+          onChangeReassignedMakeUpHours={(hours) =>
+            setFortnight((prev) => ({ ...prev, reassignedMakeUpHours: hours }))
+          }
           onToggleTaxFreeThreshold={(val) =>
             setConfig((prev) => ({ ...prev, claimTaxFreeThreshold: val }))
           }

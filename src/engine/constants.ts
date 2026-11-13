@@ -3,13 +3,14 @@ import { PayrollConfig } from '../types/payroll';
 export const RATE_PRESETS = [
   { label: 'Previous EA ($34.23)', value: 34.23 },
   { label: 'Prior Step ($35.26)', value: 35.26 },
-  { label: 'SW L2B PP2 ($36.31)', value: 36.31 },
+  { label: 'Prior Step ($36.31)', value: 36.31 },
+  { label: 'SW L2B PP2 ($37.73)', value: 37.73 },
 ] as const;
 
 export const DEFAULT_PAYROLL_CONFIG: PayrollConfig = {
   employmentType: 'PT',
   contractedGuaranteedHours: 0,
-  ordinaryRate: 36.31,
+  ordinaryRate: 37.73,
   superRate: 0.12,
   claimTaxFreeThreshold: true,
   firstAidEnabled: false,

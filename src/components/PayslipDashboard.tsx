@@ -16,6 +16,8 @@ import { PayrollConfig, PayslipResult } from '../types/payroll';
 interface PayslipDashboardProps {
   payslip: PayslipResult;
   config: PayrollConfig;
+  reassignedMakeUpHours: number;
+  onChangeReassignedMakeUpHours: (hours: number) => void;
   onToggleTaxFreeThreshold: (val: boolean) => void;
   onSelectDay: (dayIndex: number) => void;
 }
@@ -23,6 +25,8 @@ interface PayslipDashboardProps {
 export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
   payslip,
   config,
+  reassignedMakeUpHours,
+  onChangeReassignedMakeUpHours,
   onToggleTaxFreeThreshold,
   onSelectDay,
 }) => {
@@ -30,9 +34,11 @@ export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
   const [actualPaidInput, setActualPaidInput] = useState<string>('');
 
   const guaranteedTarget = config.contractedGuaranteedHours;
+  const guaranteedCountedHours =
+    payslip.totalOrdinaryAndTravelHours + payslip.makeUpHoursBalance;
   const ordinaryProgressPct =
     guaranteedTarget > 0
-      ? Math.min(100, (payslip.totalOrdinaryAndTravelHours / guaranteedTarget) * 100)
+      ? Math.min(100, (guaranteedCountedHours / guaranteedTarget) * 100)
       : Math.min(100, (payslip.totalOrdinaryAndTravelHours / 76) * 100);
 
   const actualPaidNum = actualPaidInput.trim() === '' ? null : Number(actualPaidInput);
@@ -62,7 +68,10 @@ export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
           </div>
           <div className="mt-2.5">
             <div className="flex justify-between text-[11px] font-medium text-slate-600">
-              <span>Ord + Travel: {payslip.totalOrdinaryAndTravelHours.toFixed(2)}h</span>
+              <span>
+                Ord + Travel{payslip.makeUpHoursBalance > 0 ? ' + Canc' : ''}:{' '}
+                {guaranteedCountedHours.toFixed(2)}h
+              </span>
               <span>
                 {guaranteedTarget > 0 ? `Min ${guaranteedTarget.toFixed(1)}h` : 'Max 76.0h Ord'}
               </span>
@@ -79,8 +88,32 @@ export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
             </div>
             {payslip.guaranteedHoursShortfall > 0 && (
               <p className="mt-1 text-[11px] font-semibold text-amber-700">
-                +{payslip.guaranteedHoursShortfall.toFixed(2)}h Guaranteed Hours Top-Up added
+                +{payslip.guaranteedHoursShortfall.toFixed(2)}h Guaranteed Hours Shortfall Top-Up
+                (Cl 13(c))
               </p>
+            )}
+            {payslip.totalCancelledHours > 0 && (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50/70 p-2 text-[11px]">
+                <div className="flex items-center justify-between font-bold text-amber-900">
+                  <span>Make-Up Hours Balance (Cl 19(c)):</span>
+                  <span>{payslip.makeUpHoursBalance.toFixed(2)}h</span>
+                </div>
+                <label className="no-print mt-1 flex items-center justify-between gap-2 text-[10px] text-amber-800">
+                  <span>Reassigned this fortnight (hrs):</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={payslip.totalCancelledHours}
+                    step={0.25}
+                    value={reassignedMakeUpHours || ''}
+                    placeholder="0"
+                    onChange={(e) =>
+                      onChangeReassignedMakeUpHours(Math.max(0, Number(e.target.value) || 0))
+                    }
+                    className="w-16 rounded border border-amber-300 bg-white px-1.5 py-0.5 text-right font-mono text-[11px] font-bold text-slate-900"
+                  />
+                </label>
+              </div>
             )}
           </div>
         </div>

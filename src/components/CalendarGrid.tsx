@@ -22,7 +22,7 @@ function getBadgeClasses(badge: string): string {
   if (badge.includes('Sun 200%') || badge.includes('Sat 150%')) {
     return 'bg-sky-100 text-sky-800 border-sky-200';
   }
-  if (badge.includes('Broken Shift')) {
+  if (badge.includes('Broken Shift') || badge.includes('Cancelled')) {
     return 'bg-amber-100 text-amber-800 border-amber-200';
   }
   if (badge.includes('OT')) {
@@ -170,19 +170,42 @@ export const CalendarGrid: React.FC<CalendarGridProps> = ({
                           <Plus className="mr-1 h-3.5 w-3.5" /> Add shift
                         </div>
                       ) : (
-                        day.workBlocks.slice(0, 4).map((b) => (
-                          <div
-                            key={b.id}
-                            className="flex items-center justify-between rounded-md bg-slate-100/90 px-1.5 py-1 text-[11px] text-slate-700"
-                          >
-                            <span className="font-mono font-semibold text-slate-800">
-                              {b.startTime}–{b.endTime}
-                            </span>
-                            <span className="truncate pl-1 text-[10px] font-medium text-slate-600">
-                              {getBlockShortLabel(b.blockType)}
-                            </span>
-                          </div>
-                        ))
+                        day.workBlocks.slice(0, 4).map((b) => {
+                          const isCancelled = (b.status ?? 'WORKED') === 'CLIENT_CANCELLED';
+                          const hasPreTravel =
+                            !isCancelled &&
+                            ((b.travelMinutes || 0) > 0 || (b.travelSeconds || 0) > 0);
+                          return (
+                            <div key={b.id} className="space-y-0.5">
+                              {hasPreTravel && (
+                                <div className="flex items-center justify-between rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-800">
+                                  <span>
+                                    ↳ {b.travelMinutes || 0}m {b.travelSeconds || 0}s travel
+                                  </span>
+                                  {(b.travelKms || 0) > 0 && <span>{b.travelKms}km</span>}
+                                </div>
+                              )}
+                              <div
+                                className={`flex items-center justify-between rounded-md px-1.5 py-1 text-[11px] ${
+                                  isCancelled
+                                    ? 'border border-amber-200 bg-amber-50 text-amber-900'
+                                    : 'bg-slate-100/90 text-slate-700'
+                                }`}
+                              >
+                                <span
+                                  className={`font-mono font-semibold ${
+                                    isCancelled ? 'line-through text-amber-800' : 'text-slate-800'
+                                  }`}
+                                >
+                                  {b.startTime}–{b.endTime}
+                                </span>
+                                <span className="truncate pl-1 text-[10px] font-medium">
+                                  {isCancelled ? 'Cancelled' : getBlockShortLabel(b.blockType)}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })
                       )}
                       {day.workBlocks.length > 4 && (
                         <div className="text-[10px] font-medium text-indigo-600">
@@ -220,12 +243,24 @@ export const CalendarGrid: React.FC<CalendarGridProps> = ({
                         <Clock className="h-3 w-3 text-slate-400" />
                         {calc.workedHours.toFixed(2)}h
                       </span>
-                      {(day.interClientKms > 0 || day.commuteKmsFirstLast > 0) && (
-                        <span className="inline-flex items-center gap-1 text-[10px] text-slate-500">
-                          <Car className="h-2.5 w-2.5" />
-                          {day.interClientKms + day.commuteKmsFirstLast}km
-                        </span>
-                      )}
+                      {(() => {
+                        const totalKms =
+                          (day.interClientKms || 0) +
+                          (day.commuteKmsFirstLast || 0) +
+                          day.workBlocks.reduce(
+                            (s, b) =>
+                              (b.status ?? 'WORKED') === 'CLIENT_CANCELLED'
+                                ? s
+                                : s + (b.travelKms || 0),
+                            0
+                          );
+                        return totalKms > 0 ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] text-slate-500">
+                            <Car className="h-2.5 w-2.5" />
+                            {totalKms}km
+                          </span>
+                        ) : null;
+                      })()}
                     </div>
 
                     <div className="text-right">

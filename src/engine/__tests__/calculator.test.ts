@@ -123,14 +123,36 @@ describe('Calvary Home Care Award Payroll Engine', () => {
     // Day 1 (W1 Tue): Test Case 2
     expect(res.days[1].lineItems.find((i) => i.code === 'BROKEN_SHIFT_SPAN_200')?.units).toBe(1.5);
 
-    // Day 3 (W1 Thu): Test Case 4
+    // Day 3 (W1 Thu): Test Case 4 (uses pre-shift travelMinutes/Seconds + travelKms)
     expect(res.days[3].overtimeHours).toBe(1.5);
     expect(res.days[3].travelHours).toBe(0.5);
     expect(res.days[3].lineItems.find((i) => i.code === 'ALLOWANCE_OT_MEAL')?.amount).toBe(14.1);
+    expect(res.days[3].lineItems.find((i) => i.code === 'ALLOWANCE_MILEAGE')?.units).toBe(18);
 
     // Day 9 (W2 Wed): Test Case 3
     expect(res.days[9].hasRestBreakBreach).toBe(true);
     expect(res.days[9].lineItems.find((i) => i.code === 'REST_BREAK_BREACH_200')?.units).toBe(4.0);
+  });
+
+  it('Calculates pre-shift travel in minutes + seconds and travelKms attached to the next shift', () => {
+    const fortnight = createEmptyFortnight('2026-11-09');
+    fortnight.days[0].workBlocks = [
+      makeBlock({ startTime: '09:00', endTime: '11:00' }),
+      makeBlock({
+        startTime: '11:15',
+        endTime: '13:15',
+        travelMinutes: 15,
+        travelSeconds: 30,
+        travelKms: 12.5,
+      }),
+    ];
+
+    const res = calculateFortnight(fortnight, DEFAULT_PAYROLL_CONFIG);
+    const mon = res.days[0];
+    // 15m 30s = 15.5 / 60 = 0.2583 hrs
+    expect(mon.travelHours).toBeCloseTo(15.5 / 60, 4);
+    expect(mon.brokenShiftPeriods).toBe(0);
+    expect(mon.lineItems.find((i) => i.code === 'ALLOWANCE_MILEAGE')?.units).toBe(12.5);
   });
 
   it('Enforces PT 2h minimum engagement only when not contiguous with another block', () => {
@@ -297,5 +319,76 @@ describe('Calvary Home Care Award Payroll Engine', () => {
     expect(res.guaranteedHoursShortfall).toBe(13.75);
     expect(res.groupedRows.find((r) => r.code === 'GUARANTEED_HOURS_TOPUP')?.units).toBe(13.75);
     expect(res.groupedRows.find((r) => r.code === 'ALLOWANCE_FIRST_AID')).toBeDefined();
+  });
+
+  it('Enforces Broken Shift Min 2h Period Top-Up (Cl 18(e)(ii)(C)) independently for BOTH FT & PT', () => {
+    const ftConfig: PayrollConfig = {
+      ...DEFAULT_PAYROLL_CONFIG,
+      employmentType: 'FT',
+    };
+    const fortnight = createEmptyFortnight('2026-11-09');
+    // Day 0: Broken shift with Period 1 = 1.0h (09:00-10:00 @ 100%) and Period 2 = 1.0h (19:30-20:30 @ 112.5% Afternoon, within 21:00 12h span)
+    fortnight.days[0].workBlocks = [
+      makeBlock({ startTime: '09:00', endTime: '10:00' }),
+      makeBlock({ startTime: '19:30', endTime: '20:30' }),
+    ];
+    // Day 1: Single continuous 1.0h shift in FT mode -> NO PT daily top-up
+    fortnight.days[1].workBlocks = [makeBlock({ startTime: '09:00', endTime: '10:00' })];
+
+    const res = calculateFortnight(fortnight, ftConfig);
+    const brokenTopUps = res.days[0].lineItems.filter(
+      (i) => i.code === 'BROKEN_MIN_PERIOD_TOPUP'
+    );
+    expect(brokenTopUps).toHaveLength(2);
+    expect(brokenTopUps[0].units).toBe(1.0);
+    expect(brokenTopUps[0].multiplier).toBe(1.0);
+    expect(brokenTopUps[1].units).toBe(1.0);
+    expect(brokenTopUps[1].multiplier).toBe(1.125);
+    expect(res.days[0].autoDetectionMessages.some((m) => m.includes('Cl 18(e)(ii)(C)'))).toBe(
+      true
+    );
+
+    // Day 1 FT single shift should NOT receive PT Cl 13(e) top-up
+    expect(res.days[1].lineItems.find((i) => i.code === 'MIN_ENGAGEMENT_TOPUP')).toBeUndefined();
+  });
+
+  it('Handles CLIENT_CANCELLED protection (Cl 19(c)), Make-Up Hours Balance, and Guaranteed Hours Top-Up (Cl 13(c))', () => {
+    const config: PayrollConfig = {
+      ...DEFAULT_PAYROLL_CONFIG,
+      employmentType: 'PT',
+      contractedGuaranteedHours: 20,
+    };
+    const fortnight = createEmptyFortnight('2026-11-09');
+    // Day 0: 8.0h worked + 4.0h client cancelled (no broken shift triggered by cancelled block!)
+    fortnight.days[0].workBlocks = [
+      makeBlock({ startTime: '08:00', endTime: '16:00', status: 'WORKED' }),
+      makeBlock({
+        startTime: '17:30',
+        endTime: '21:30',
+        status: 'CLIENT_CANCELLED',
+        travelMinutes: 20,
+        travelKms: 10,
+      }),
+    ];
+
+    const res = calculateFortnight(fortnight, config);
+    expect(res.days[0].brokenShiftPeriods).toBe(0); // Cancelled shift didn't cause physical broken shift
+    expect(res.days[0].lineItems.find((i) => i.code === 'ALLOWANCE_MILEAGE')).toBeUndefined();
+    expect(res.totalCancelledHours).toBe(4.0);
+    expect(res.makeUpHoursBalance).toBe(4.0);
+    expect(res.days[0].lineItems.find((i) => i.code === 'CLIENT_CANCELLED_ORDINARY')?.units).toBe(
+      4.0
+    );
+    // Guaranteed = 20h; Worked 8h + Un-reassigned Cancelled 4h = 12h -> Shortfall Top-Up = 8.0h
+    expect(res.guaranteedHoursShortfall).toBe(8.0);
+    expect(res.groupedRows.find((r) => r.code === 'GUARANTEED_HOURS_TOPUP')?.units).toBe(8.0);
+
+    // Now test with 2.0h of the cancelled hours reassigned as make-up work within the fortnight
+    fortnight.days[1].workBlocks = [makeBlock({ startTime: '09:00', endTime: '11:00' })];
+    fortnight.reassignedMakeUpHours = 2.0;
+    const resReassigned = calculateFortnight(fortnight, config);
+    expect(resReassigned.makeUpHoursBalance).toBe(2.0);
+    // Worked (8 + 2 = 10h) + Un-reassigned Cancelled (2h) = 12h -> Shortfall still 8.0h
+    expect(resReassigned.guaranteedHoursShortfall).toBe(8.0);
   });
 });

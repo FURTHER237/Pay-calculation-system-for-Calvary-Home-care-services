@@ -63,8 +63,7 @@ export function createDemoTestFortnight(startDate: string = getMondayOfWeek()): 
   ];
 
   // Test Case 4 (Week 1 Thu): Daily Overtime + Travel Exemption
-  // 07:00-17:30 (30m unpaid break = 10h client) + 17:30-18:00 (0.5h travel) + 18:00-19:30 (1.5h client OT @ 150% + $14.10 meal)
-  fortnight.days[3].interClientKms = 18;
+  // 07:00-17:30 (30m unpaid break = 10h client) + pre-shift travel 30m 0s (18 km) before 18:00-19:30 (1.5h client OT @ 150% + $14.10 meal)
   fortnight.days[3].workBlocks = [
     {
       id: 'demo-tc4-a',
@@ -72,18 +71,6 @@ export function createDemoTestFortnight(startDate: string = getMondayOfWeek()): 
       startTime: '07:00',
       endTime: '17:30',
       unpaidMealBreakMinutes: 30,
-      paidClientMealMinutes: 0,
-      hasClinicalAssistance: false,
-      isRecallOvertime: false,
-      remoteContext: 'NOT_ON_CALL',
-      rosteredHours: 0,
-    },
-    {
-      id: 'demo-tc4-b',
-      blockType: 'TRAVEL_BETWEEN_CLIENTS',
-      startTime: '17:30',
-      endTime: '18:00',
-      unpaidMealBreakMinutes: 0,
       paidClientMealMinutes: 0,
       hasClinicalAssistance: false,
       isRecallOvertime: false,
@@ -101,6 +88,9 @@ export function createDemoTestFortnight(startDate: string = getMondayOfWeek()): 
       isRecallOvertime: false,
       remoteContext: 'NOT_ON_CALL',
       rosteredHours: 0,
+      travelMinutes: 30,
+      travelSeconds: 0,
+      travelKms: 18,
     },
   ];
 

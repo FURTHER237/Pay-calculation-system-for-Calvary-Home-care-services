@@ -16,10 +16,12 @@ export type RemoteContext =
   | 'ON_CALL_NIGHT_10PM_6AM'
   | 'TRAINING_MEETING';
 
+export type WorkBlockStatus = 'WORKED' | 'CLIENT_CANCELLED';
+
 export interface PayrollConfig {
   employmentType: EmploymentType;
   contractedGuaranteedHours: number; // 0 to 76.0
-  ordinaryRate: number; // default $36.31
+  ordinaryRate: number; // default $37.73
   superRate: number; // default 0.12 (12%)
   claimTaxFreeThreshold: boolean;
   firstAidEnabled: boolean;
@@ -43,6 +45,7 @@ export interface PayrollConfig {
 export interface WorkBlock {
   id: string;
   blockType: BlockType;
+  status?: WorkBlockStatus; // defaults to 'WORKED'
   startTime: string; // HH:mm
   endTime: string; // HH:mm
   unpaidMealBreakMinutes: number;
@@ -52,6 +55,9 @@ export interface WorkBlock {
   remoteContext: RemoteContext;
   rosteredHours: number; // For FT users
   care24ActiveHours?: number; // For CARE_24HR, defaults to 8.0
+  travelMinutes?: number; // Pre-shift travel from previous client (mins)
+  travelSeconds?: number; // Pre-shift travel from previous client (secs, 0-59)
+  travelKms?: number; // Pre-shift travel distance from previous client (km)
 }
 
 export interface DayRecord {
@@ -71,6 +77,7 @@ export interface FortnightPeriod {
   startDate: string; // YYYY-MM-DD (Monday of Week 1)
   endDate: string; // YYYY-MM-DD (Sunday of Week 2)
   days: DayRecord[]; // 14 items
+  reassignedMakeUpHours?: number; // Cancelled hours reassigned within current fortnight
 }
 
 export type PayCode =
@@ -96,6 +103,8 @@ export type PayCode =
   | 'CARE_24HR_155'
   | 'REMOTE_WORK'
   | 'MIN_ENGAGEMENT_TOPUP'
+  | 'BROKEN_MIN_PERIOD_TOPUP'
+  | 'CLIENT_CANCELLED_ORDINARY'
   | 'SLEEPOVER_4H_TOPUP'
   | 'GUARANTEED_HOURS_TOPUP'
   | 'ALLOWANCE_BROKEN_1'
@@ -182,6 +191,9 @@ export interface PayslipResult {
   groupedRows: PayslipSummaryRow[];
   totalWorkedHours: number;
   totalOrdinaryAndTravelHours: number;
+  totalCancelledHours: number;
+  reassignedMakeUpHours: number;
+  makeUpHoursBalance: number;
   guaranteedHoursShortfall: number;
   totalOvertimeHours: number;
   grossBaseAndPenaltyPay: number;

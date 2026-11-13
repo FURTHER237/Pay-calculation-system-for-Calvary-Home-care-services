@@ -222,9 +222,25 @@ const PAY_CODE_META: Record<
     isTaxable: true,
   },
   MIN_ENGAGEMENT_TOPUP: {
-    label: 'Min 2h Engagement Top-Up',
+    label: 'PT Min 2h Daily Engagement Top-Up (Cl 13(e))',
     category: 'TOPUP',
-    clauseRef: 'Clause 11(c)',
+    clauseRef: 'Clause 13(e)',
+    unitLabel: 'hrs',
+    isOte: true,
+    isTaxable: true,
+  },
+  BROKEN_MIN_PERIOD_TOPUP: {
+    label: 'Broken Shift Min 2h Period Top-Up (Cl 18(e)(ii)(C))',
+    category: 'TOPUP',
+    clauseRef: 'Clause 18(e)(ii)(C)',
+    unitLabel: 'hrs',
+    isOte: true,
+    isTaxable: true,
+  },
+  CLIENT_CANCELLED_ORDINARY: {
+    label: 'Client Cancellation Protection (Cl 19(c))',
+    category: 'TOPUP',
+    clauseRef: 'Clause 19(c)(i)',
     unitLabel: 'hrs',
     isOte: true,
     isTaxable: true,
@@ -238,9 +254,9 @@ const PAY_CODE_META: Record<
     isTaxable: true,
   },
   GUARANTEED_HOURS_TOPUP: {
-    label: 'Guaranteed Hours Make-Up / Top-Up',
+    label: 'Guaranteed Hours Shortfall Top-Up (Cl 13(c))',
     category: 'TOPUP',
-    clauseRef: 'Clause 11(b)',
+    clauseRef: 'Clause 13(c)',
     unitLabel: 'hrs',
     isOte: true,
     isTaxable: true,
@@ -458,6 +474,10 @@ export function calculateFortnight(
 ): PayslipResult {
   const days = fortnight.days;
   const allAbsBlocks: AbsBlock[] = [];
+  const cancelledBlocksByDay = new Map<
+    number,
+    Array<{ block: WorkBlock; hours: number }>
+  >();
 
   for (let d = 0; d < days.length; d++) {
     const dayOrigin = d * 1440;
@@ -468,6 +488,16 @@ export function calculateFortnight(
       const rawHours = (endAbs - startAbs) / 60;
       const unpaidBreakHours = (block.unpaidMealBreakMinutes || 0) / 60;
       const workedHours = Math.max(0, rawHours - unpaidBreakHours);
+
+      if ((block.status ?? 'WORKED') === 'CLIENT_CANCELLED') {
+        if (workedHours > 0) {
+          const list = cancelledBlocksByDay.get(d) ?? [];
+          list.push({ block, hours: workedHours });
+          cancelledBlocksByDay.set(d, list);
+        }
+        continue;
+      }
+
       allAbsBlocks.push({
         block,
         dayIndex: d,
@@ -476,6 +506,34 @@ export function calculateFortnight(
         rawHours,
         workedHours,
       });
+
+      // Pre-shift travel (minutes + seconds) occurring immediately before this shift
+      const travelMins =
+        Math.max(0, block.travelMinutes || 0) + Math.max(0, block.travelSeconds || 0) / 60;
+      if (block.blockType === 'REGULAR_CLIENT' && travelMins > 0) {
+        const travelStartAbs = Math.max(0, startAbs - travelMins);
+        const travelRawHours = (startAbs - travelStartAbs) / 60;
+        if (travelRawHours > 0) {
+          allAbsBlocks.push({
+            block: {
+              ...block,
+              id: `${block.id}__pretravel`,
+              blockType: 'TRAVEL_BETWEEN_CLIENTS',
+              startTime: formatMinutesToTime(travelStartAbs - dayOrigin),
+              endTime: block.startTime,
+              unpaidMealBreakMinutes: 0,
+              paidClientMealMinutes: 0,
+              hasClinicalAssistance: false,
+              isRecallOvertime: false,
+            },
+            dayIndex: d,
+            startAbs: travelStartAbs,
+            endAbs: startAbs,
+            rawHours: travelRawHours,
+            workedHours: travelRawHours,
+          });
+        }
+      }
     }
   }
 
@@ -552,7 +610,13 @@ export function calculateFortnight(
   const periodsByDay = new Map<number, WorkPeriod[]>();
   const minEngagementTopUpsByDay = new Map<
     number,
-    Array<{ blockId: string; topUpHours: number; startAbs: number; period: WorkPeriod }>
+    Array<{
+      kind: 'PT_DAILY' | 'BROKEN_PERIOD';
+      topUpHours: number;
+      startAbs: number;
+      endAbs: number;
+      period: WorkPeriod;
+    }>
   >();
 
   for (let d = 0; d < days.length; d++) {
@@ -596,53 +660,56 @@ export function calculateFortnight(
 
     periodsByDay.set(d, periods);
 
-    // Check PT Min 2-Hour Engagement on contiguous clusters (gap <= 0)
-    if (config.employmentType === 'PT') {
-      const clusters: AbsBlock[][] = [[dayShiftBlocks[0]]];
-      for (let i = 1; i < dayShiftBlocks.length; i++) {
-        const prev = dayShiftBlocks[i - 1];
-        const curr = dayShiftBlocks[i];
-        const gapMins = curr.startAbs - prev.endAbs;
-        if (gapMins > 0) {
-          clusters.push([curr]);
-        } else {
-          clusters[clusters.length - 1].push(curr);
-        }
-      }
+    const dayTopUps: Array<{
+      kind: 'PT_DAILY' | 'BROKEN_PERIOD';
+      topUpHours: number;
+      startAbs: number;
+      endAbs: number;
+      period: WorkPeriod;
+    }> = [];
 
-      const dayTopUps: Array<{
-        blockId: string;
-        topUpHours: number;
-        startAbs: number;
-        period: WorkPeriod;
-      }> = [];
-
-      for (const cluster of clusters) {
-        const hasRegular = cluster.some(
+    if (isBrokenShift) {
+      // Rule 1.2 (Clause 18(e)(ii)(C)): Applies to BOTH FT & PT — each distinct period MUST be >= 2.0 hours
+      for (const period of periods) {
+        const hasRegular = period.blocks.some(
           (b) => b.block.blockType === 'REGULAR_CLIENT' && !b.block.isRecallOvertime
         );
-        if (!hasRegular) continue;
-        // Skip if cluster is part of a sleepover contiguous chain (handled by 4h sleepover rule)
-        if (cluster.some((b) => sleepoverContiguousIds.has(b.block.id))) continue;
-
-        const clusterWorked = cluster.reduce((s, b) => s + b.workedHours, 0);
-        if (clusterWorked > 0 && clusterWorked < 2.0) {
-          const lastBlock = cluster[cluster.length - 1];
-          const ownerPeriod =
-            periods.find((p) => p.blocks.some((pb) => pb.block.id === lastBlock.block.id)) ??
-            periods[0];
+        if (!hasRegular || period.isContiguousWithSleepover) continue;
+        const periodWorked = period.blocks.reduce((s, b) => s + b.workedHours, 0);
+        if (periodWorked > 0 && periodWorked < 2.0) {
+          const lastBlock = period.blocks[period.blocks.length - 1];
           dayTopUps.push({
-            blockId: lastBlock.block.id,
-            topUpHours: 2.0 - clusterWorked,
+            kind: 'BROKEN_PERIOD',
+            topUpHours: 2.0 - periodWorked,
             startAbs: lastBlock.startAbs,
-            period: ownerPeriod,
+            endAbs: lastBlock.endAbs,
+            period,
           });
         }
       }
-
-      if (dayTopUps.length > 0) {
-        minEngagementTopUpsByDay.set(d, dayTopUps);
+    } else if (config.employmentType === 'PT' && periods.length === 1) {
+      // Rule 1.1 (Clause 13(e)): PT single continuous period < 2.0 hours
+      const period = periods[0];
+      const hasRegular = period.blocks.some(
+        (b) => b.block.blockType === 'REGULAR_CLIENT' && !b.block.isRecallOvertime
+      );
+      if (hasRegular && !period.isContiguousWithSleepover) {
+        const periodWorked = period.blocks.reduce((s, b) => s + b.workedHours, 0);
+        if (periodWorked > 0 && periodWorked < 2.0) {
+          const lastBlock = period.blocks[period.blocks.length - 1];
+          dayTopUps.push({
+            kind: 'PT_DAILY',
+            topUpHours: 2.0 - periodWorked,
+            startAbs: lastBlock.startAbs,
+            endAbs: lastBlock.endAbs,
+            period,
+          });
+        }
       }
+    }
+
+    if (dayTopUps.length > 0) {
+      minEngagementTopUpsByDay.set(d, dayTopUps);
     }
   }
 
@@ -700,6 +767,8 @@ export function calculateFortnight(
   let totalOrdinaryAndTravelHours = 0;
   let totalWorkedHours = 0;
   let totalOvertimeHours = 0;
+  let totalCancelledHours = 0;
+  let remainingReassignedMakeUp = Math.max(0, fortnight.reassignedMakeUpHours || 0);
 
   const dailyOvertimeUsed = new Array<number>(14).fill(0);
   const dailyClientOrdinaryUsed = new Array<number>(14).fill(0);
@@ -1123,41 +1192,87 @@ export function calculateFortnight(
       }
     }
 
-    // Min 2-Hour Engagement Top-Ups for PT on Day d
+    // Min 2-Hour Engagement Top-Ups (Rule 1.1 PT Cl 13(e) & Rule 1.2 Broken Shift Period Cl 18(e)(ii)(C))
     const dayMinTopUps = minEngagementTopUpsByDay.get(d) ?? [];
     for (const topUp of dayMinTopUps) {
       const topUpHours = topUp.topUpHours;
       const { dayOfWeek: dow, isPublicHoliday: isPh } = getSliceDayInfo(topUp.startAbs, days);
       const weekdayShiftKind = getWeekdayShiftKind(topUp.period);
+      const outsideBrokenSpan =
+        topUp.period.brokenSpanLimitAbs != null &&
+        topUp.endAbs >= topUp.period.brokenSpanLimitAbs;
+
       let mult = 1.0;
       if (isPh) mult = 2.5;
+      else if (topUp.period.inRestBreach || outsideBrokenSpan) mult = 2.0;
       else if (dow === 6) mult = 2.0;
       else if (dow === 5) mult = 1.5;
       else if (weekdayShiftKind === 'NIGHT') mult = 1.15;
       else if (weekdayShiftKind === 'AFTERNOON') mult = 1.125;
 
+      const isBrokenPeriodTopUp = topUp.kind === 'BROKEN_PERIOD';
+      const topUpCode: PayCode = isBrokenPeriodTopUp
+        ? 'BROKEN_MIN_PERIOD_TOPUP'
+        : 'MIN_ENGAGEMENT_TOPUP';
+      const topUpFlag = isBrokenPeriodTopUp
+        ? 'Broken Shift Min 2h Period Top-Up (Cl 18(e)(ii)(C))'
+        : 'PT Min 2h Daily Engagement Top-Up (Cl 13(e))';
+
       dayLineItems.push(
         makeLineItem(
           nextId('min2h'),
-          'MIN_ENGAGEMENT_TOPUP',
+          topUpCode,
           topUpHours,
           config.ordinaryRate,
           mult,
           day.date,
-          'Part-time 2.0h minimum engagement padding'
+          topUpFlag
         )
       );
       dayWorkedHours += topUpHours;
       totalWorkedHours += topUpHours;
       weekWorkedHours[weekIdx] += topUpHours;
-      dayOrdinaryNonTravelHours += topUpHours;
-      fortnightlyOrdinaryAccumulator += topUpHours;
-      totalOrdinaryAndTravelHours += topUpHours;
-      badges.push('Min 2h Top-Up');
+      if (!topUp.period.inRestBreach && !outsideBrokenSpan) {
+        dayOrdinaryNonTravelHours += topUpHours;
+        fortnightlyOrdinaryAccumulator += topUpHours;
+        totalOrdinaryAndTravelHours += topUpHours;
+      }
+      badges.push(isBrokenPeriodTopUp ? 'Broken Min 2h' : 'PT Min 2h');
       autoDetectionMessages.push(
-        `Min 2h Engagement Top-Up: +${topUpHours.toFixed(2)}h added at ${(mult * 100).toFixed(
-          1
-        ).replace(/\.0$/, '')}% rate.`
+        `${topUpFlag}: +${topUpHours.toFixed(2)}h added at ${(mult * 100)
+          .toFixed(1)
+          .replace(/\.0$/, '')}% rate.`
+      );
+    }
+
+    // Rule 9.1–9.2: Client Cancellation Protection (Clause 19(c)(i))
+    const dayCancelled = cancelledBlocksByDay.get(d) ?? [];
+    for (const c of dayCancelled) {
+      totalCancelledHours += c.hours;
+      const reassignedOffset = Math.min(c.hours, remainingReassignedMakeUp);
+      remainingReassignedMakeUp -= reassignedOffset;
+      const protectedHours = roundHours(c.hours - reassignedOffset);
+
+      if (protectedHours > 0) {
+        dayLineItems.push(
+          makeLineItem(
+            nextId('canc'),
+            'CLIENT_CANCELLED_ORDINARY',
+            protectedHours,
+            config.ordinaryRate,
+            1.0,
+            day.date,
+            `${c.block.startTime}–${c.block.endTime} client cancelled (Make-Up Hours Balance)`
+          )
+        );
+      }
+      badges.push('Client Cancelled');
+      autoDetectionMessages.push(
+        `Client Cancellation (${c.block.startTime}–${c.block.endTime}, ${c.hours.toFixed(
+          2
+        )}h): counts toward Guaranteed Hours at 100% Ordinary Rate (Cl 19(c)(i))${
+          reassignedOffset > 0 ? ` — ${reassignedOffset.toFixed(2)}h reassigned` : ''
+        }.`
       );
     }
 
@@ -1472,7 +1587,15 @@ export function calculateFortnight(
     }
 
     // Mileage & Commute >25km Rule (Rule 8)
-    let eligibleMileageKms = Math.max(0, day.interClientKms || 0);
+    const blockTravelKms = day.workBlocks.reduce(
+      (sum, b) =>
+        (b.status ?? 'WORKED') === 'CLIENT_CANCELLED'
+          ? sum
+          : sum + Math.max(0, b.travelKms || 0),
+      0
+    );
+    const totalInterClientKms = Math.max(0, day.interClientKms || 0) + blockTravelKms;
+    let eligibleMileageKms = totalInterClientKms;
     let commuteEligibleKms = 0;
     if ((day.commuteKmsFirstLast || 0) > 25 && dayWorkedHours > 0 && dayWorkedHours < 3.0) {
       commuteEligibleKms = day.commuteKmsFirstLast - 25;
@@ -1503,14 +1626,14 @@ export function calculateFortnight(
           1,
           day.date,
           commuteEligibleKms > 0
-            ? `${day.interClientKms || 0}km inter-client + ${commuteEligibleKms}km commute (>25km rule)`
-            : `${day.interClientKms}km inter-client`
+            ? `${totalInterClientKms}km inter-client + ${commuteEligibleKms}km commute (>25km rule)`
+            : `${totalInterClientKms}km inter-client`
         )
       );
     }
 
     // Track Uniform / Laundry claims (evaluated with weekly caps after day loop)
-    const defaultClaim = day.workBlocks.length > 0;
+    const defaultClaim = day.workBlocks.some((b) => (b.status ?? 'WORKED') === 'WORKED');
     const effectiveUniformClaimed =
       day.uniformClaimed !== undefined ? day.uniformClaimed : defaultClaim;
     const effectiveLaundryClaimed =
@@ -1655,10 +1778,17 @@ export function calculateFortnight(
     }
   }
 
-  // Step 6: Rule 9 - Guaranteed Hours Top-Up
+  // Step 6: Rule 9 - Guaranteed Hours Shortfall Top-Up (Clause 13(c) & 19(c))
+  const reassignedMakeUpHours = roundHours(
+    Math.min(totalCancelledHours, Math.max(0, fortnight.reassignedMakeUpHours || 0))
+  );
+  const makeUpHoursBalance = roundHours(Math.max(0, totalCancelledHours - reassignedMakeUpHours));
+  const totalCountedTowardGuaranteed = roundHours(
+    totalOrdinaryAndTravelHours + makeUpHoursBalance
+  );
   const guaranteedTarget = Math.max(0, Math.min(76.0, config.contractedGuaranteedHours || 0));
   const guaranteedHoursShortfall = roundHours(
-    Math.max(0, guaranteedTarget - totalOrdinaryAndTravelHours)
+    Math.max(0, guaranteedTarget - totalCountedTowardGuaranteed)
   );
   if (guaranteedHoursShortfall > 0) {
     allLineItems.push(
@@ -1669,9 +1799,9 @@ export function calculateFortnight(
         config.ordinaryRate,
         1.0,
         undefined,
-        `Contracted ${guaranteedTarget.toFixed(2)}h - Actual ordinary/travel ${totalOrdinaryAndTravelHours.toFixed(
+        `Contracted ${guaranteedTarget.toFixed(2)}h - (Ord/Travel ${totalOrdinaryAndTravelHours.toFixed(
           2
-        )}h`
+        )}h + Un-reassigned Cancelled ${makeUpHoursBalance.toFixed(2)}h)`
       )
     );
   }
@@ -1840,15 +1970,17 @@ export function calculateFortnight(
 
   const topUpAmt = sumByCodes([
     'MIN_ENGAGEMENT_TOPUP',
+    'BROKEN_MIN_PERIOD_TOPUP',
+    'CLIENT_CANCELLED_ORDINARY',
     'SLEEPOVER_4H_TOPUP',
     'GUARANTEED_HOURS_TOPUP',
   ]);
   if (topUpAmt > 0) {
     discrepancyHints.push({
-      clauseRef: 'Clause 11 & 25(a)',
-      title: 'Minimum Engagement / Sleepover 4h / Guaranteed Hours Top-Ups',
+      clauseRef: 'Clause 13, 18(e), 19(c) & 25(a)',
+      title: 'Minimum Engagement / Client Cancellation / Guaranteed Hours Top-Ups',
       estimatedAmount: topUpAmt,
-      explanation: `Automatic floor top-ups totalling $${topUpAmt.toFixed(2)} for short shifts, sleepover minimums, or guaranteed hours.`,
+      explanation: `Automatic floor top-ups & cancellation protection totalling $${topUpAmt.toFixed(2)}.`,
     });
   }
 
@@ -1858,6 +1990,9 @@ export function calculateFortnight(
     groupedRows,
     totalWorkedHours: roundHours(totalWorkedHours),
     totalOrdinaryAndTravelHours: roundHours(totalOrdinaryAndTravelHours),
+    totalCancelledHours: roundHours(totalCancelledHours),
+    reassignedMakeUpHours,
+    makeUpHoursBalance,
     guaranteedHoursShortfall,
     totalOvertimeHours: roundHours(totalOvertimeHours),
     grossBaseAndPenaltyPay,
