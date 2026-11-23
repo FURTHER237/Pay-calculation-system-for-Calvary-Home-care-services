@@ -9,6 +9,7 @@ import { calculateFortnight } from './engine/calculator';
 import { DEFAULT_PAYROLL_CONFIG } from './engine/constants';
 import { createDemoTestFortnight } from './engine/demoFortnight';
 import { downloadTextFile, generatePayslipCsv } from './engine/exportUtils';
+import { parseTimesheetToFortnight } from './engine/timesheetParser';
 import { addDaysIso, createEmptyFortnight, getMondayOfWeek } from './engine/timeUtils';
 import { DayRecord, FortnightPeriod, PayrollConfig } from './types/payroll';
 
@@ -132,6 +133,20 @@ export const App: React.FC = () => {
   const handleImportJson = async (file: File) => {
     try {
       const text = await file.text();
+      const trimmed = text.trim();
+      const isCsvOrTsv =
+        /\.(csv|tsv|txt)$/i.test(file.name) ||
+        (!trimmed.startsWith('{') && !trimmed.startsWith('['));
+
+      if (isCsvOrTsv) {
+        const res = parseTimesheetToFortnight(text);
+        setFortnight(res.fortnight);
+        showToast(
+          `Imported ${res.importedBlockCount} shifts across ${res.importedDayCount} day(s) from timesheet.`
+        );
+        return;
+      }
+
       const parsed = JSON.parse(text);
       if (parsed.fortnight && Array.isArray(parsed.fortnight.days) && parsed.fortnight.days.length === 14) {
         setFortnight(parsed.fortnight);
@@ -153,7 +168,7 @@ export const App: React.FC = () => {
       }
       showToast('Imported fortnight & settings from JSON.');
     } catch {
-      showToast('Could not parse JSON file.');
+      showToast('Could not parse imported JSON or CSV/TSV file.');
     }
   };
 

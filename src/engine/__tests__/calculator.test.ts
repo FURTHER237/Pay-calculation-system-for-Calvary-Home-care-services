@@ -3,6 +3,7 @@ import { calculateFortnight } from '../calculator';
 import { DEFAULT_PAYROLL_CONFIG } from '../constants';
 import { createDemoTestFortnight } from '../demoFortnight';
 import { createEmptyFortnight } from '../timeUtils';
+import { parseTimesheetToFortnight } from '../timesheetParser';
 import { PayrollConfig, WorkBlock } from '../../types/payroll';
 
 function makeBlock(partial: Partial<WorkBlock> & { startTime: string; endTime: string }): WorkBlock {
@@ -503,5 +504,122 @@ describe('Calvary Home Care Award Payroll Engine', () => {
     expect(res.accrualShiftworkerHours).toBeCloseTo(16 * (190 / 1976), 2);
     expect(res.accrualPersonalLeaveHours).toBeCloseTo(16 * (76 / 1976), 2);
     expect(res.qualifyingWeekendsWorked).toBe(1);
+  });
+
+  it('Steps 1–5 Deterministic Broken Shift Pipeline: max 2 longest breaks, excludes UNPAID_BREAK_TRAVEL time & km, isolates period penalties, enforces 2h min & 12h span', () => {
+    const fortnight = createEmptyFortnight('2026-10-05');
+
+    // Day 0: 3-period broken shift with travel + kms inside BOTH unpaid breaks AND valid intra-period travel in Period 3
+    fortnight.days[0].workBlocks = [
+      makeBlock({ startTime: '09:00', endTime: '10:00' }), // Period 1: 1.0h -> +1.0h top-up @ 100%
+      makeBlock({
+        startTime: '12:15',
+        endTime: '13:15',
+        travelMinutes: 15,
+        travelKms: 8.5, // Inside Break 1 (10:00-12:15) -> UNPAID_BREAK_TRAVEL (0h, 0km)
+      }), // Period 2: 1.0h -> +1.0h top-up @ 100% (no Afternoon bleed)
+      makeBlock({
+        blockType: 'TRAVEL_BETWEEN_CLIENTS',
+        startTime: '16:15',
+        endTime: '16:30',
+        travelKms: 5.0, // Inside Break 2 (13:15-16:30) -> UNPAID_BREAK_TRAVEL (0h, 0km)
+      }),
+      makeBlock({ startTime: '16:30', endTime: '17:30' }), // Period 3 start
+      makeBlock({
+        startTime: '17:45',
+        endTime: '18:45',
+        travelMinutes: 15, // Intra-Period 3 travel -> PAID @ 112.5%
+      }),
+      makeBlock({
+        startTime: '19:00',
+        endTime: '21:00', // Within 12h span (09:00+12h = 21:00), finishes >20:00 -> Period 3 @ 112.5%
+        travelMinutes: 8,
+        travelSeconds: 5,
+        travelKms: 5.72, // Intra-Period 3 travel & mileage -> PAID
+      }),
+    ];
+
+    // Day 2: 4 client blocks separated by 3 unpaid gaps (70m, 140m, 190m)
+    // Case 2 MUST select ONLY the 2 longest (140m & 190m) -> 3 Periods, keeping 70m inside Period 1
+    fortnight.days[2].workBlocks = [
+      makeBlock({ startTime: '06:30', endTime: '07:50' }), // 70m gap -> 09:00 (stays in Period 1)
+      makeBlock({ startTime: '09:00', endTime: '10:00' }), // 140m gap -> 12:20 (Break 1)
+      makeBlock({ startTime: '12:20', endTime: '14:20' }), // 190m gap -> 17:30 (Break 2)
+      makeBlock({ startTime: '17:30', endTime: '19:30' }),
+    ];
+
+    const res = calculateFortnight(fortnight, DEFAULT_PAYROLL_CONFIG);
+    const d0 = res.days[0];
+    const d2 = res.days[2];
+
+    expect(d0.brokenShiftPeriods).toBe(3);
+    expect(d0.brokenShiftUnpaidBreaks).toBe(2);
+
+    // Periods 1 & 2 get 1.0h + 1.0h @ 100% Ordinary + 1.0h + 1.0h Cl 18(e)(ii)(C) Top-Up @ 100%
+    const d0Base = d0.lineItems
+      .filter((i) => i.code === 'BASE_ORDINARY')
+      .reduce((s, i) => s + i.units, 0);
+    expect(d0Base).toBeCloseTo(2.0, 4);
+    const d0TopUps = d0.lineItems.filter((i) => i.code === 'BROKEN_MIN_PERIOD_TOPUP');
+    expect(d0TopUps).toHaveLength(2);
+    expect(d0TopUps[0].units).toBe(1.0);
+    expect(d0TopUps[0].multiplier).toBe(1.0);
+    expect(d0TopUps[1].units).toBe(1.0);
+    expect(d0TopUps[1].multiplier).toBe(1.0);
+
+    // Period 3 (16:30-21:00) gets 112.5% across all 4.0h client work + 23m05s intra-period travel
+    const d0AftClient = d0.lineItems
+      .filter((i) => i.code === 'AFTERNOON_SHIFT')
+      .reduce((s, i) => s + i.units, 0);
+    expect(d0AftClient).toBeCloseTo(4.0, 4);
+    const expectedTravelHrs = (15 + 8 + 5 / 60) / 60;
+    expect(d0.travelHours).toBeCloseTo(expectedTravelHrs, 4);
+    expect(
+      d0.lineItems
+        .filter((i) => i.code === 'TRAVEL_AFTERNOON')
+        .reduce((s, i) => s + i.units, 0)
+    ).toBeCloseTo(expectedTravelHrs, 4);
+
+    // Excluded break travel kms (8.5km & 5.0km) must NOT be reimbursed; ONLY Period 3's 5.72km is paid
+    expect(d0.lineItems.find((i) => i.code === 'ALLOWANCE_MILEAGE')?.units).toBeCloseTo(5.72, 2);
+    expect(
+      d0.autoDetectionMessages.filter((m) => m.includes('UNPAID_BREAK_TRAVEL')).length
+    ).toBe(2);
+
+    // Day 2: 3 gaps >60m still partition into max 3 Periods (2 breaks)
+    expect(d2.brokenShiftPeriods).toBe(3);
+    expect(d2.brokenShiftUnpaidBreaks).toBe(2);
+    expect(d2.lineItems.find((i) => i.code === 'ALLOWANCE_BROKEN_2')?.amount).toBe(24.27);
+  });
+
+  it('Step 6 Universal Timesheet Parser: decouples Afternoon/Night/Weekend duration columns from travel & mileage attachment', () => {
+    const tsv = [
+      'Date\tClient\tStart\tEnd\tOrdinary\tAfternoon\tNight\tTravel Time\tMileage',
+      '06/10/2026\tMorning Client\t09:00\t10:00\t1:00\t\t\t\t',
+      '06/10/2026\tMidday Client\t12:15\t13:15\t1:00\t\t\t10:00\t6.0 km',
+      '06/10/2026\tKerrin\t16:30\t17:30\t1:00\t\t\t12:00\t4.0 km',
+      '06/10/2026\tJennifer\t17:45\t18:45\t1:00\t\t\t15:00\t9.10 km',
+      '06/10/2026\tAnne\t19:00\t21:00\t\t2:00\t\t08:05\t5.72 km',
+    ].join('\n');
+
+    const parsed = parseTimesheetToFortnight(tsv);
+    expect(parsed.importedBlockCount).toBe(5);
+    expect(parsed.fortnight.startDate).toBe('2026-10-05');
+
+    const res = calculateFortnight(parsed.fortnight, DEFAULT_PAYROLL_CONFIG);
+    const tue = res.days[1];
+
+    expect(tue.brokenShiftPeriods).toBe(3);
+    const expectedTravelHrs = (15 + 8 + 5 / 60) / 60;
+    expect(tue.travelHours).toBeCloseTo(expectedTravelHrs, 4);
+    expect(tue.lineItems.find((i) => i.code === 'ALLOWANCE_MILEAGE')?.units).toBeCloseTo(
+      9.1 + 5.72,
+      2
+    );
+    expect(
+      tue.lineItems
+        .filter((i) => i.code === 'AFTERNOON_SHIFT')
+        .reduce((s, i) => s + i.units, 0)
+    ).toBeCloseTo(4.0, 4);
   });
 });

@@ -102,7 +102,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-            title="Import JSON backup"
+            title="Import JSON backup or CSV/TSV timesheet"
           >
             <Upload className="h-3.5 w-3.5 text-slate-500" />
             Import
@@ -110,7 +110,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <input
             ref={fileInputRef}
             type="file"
-            accept="application/json,.json"
+            accept=".json,.csv,.tsv,.txt,application/json,text/csv,text/tab-separated-values"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];

@@ -516,6 +516,190 @@ function getWeekdayShiftKind(period: WorkPeriod): 'ORDINARY' | 'AFTERNOON' | 'NI
   return 'ORDINARY';
 }
 
+interface PendingPreTravel {
+  block: WorkBlock;
+  dayIndex: number;
+  dayOrigin: number;
+  startAbs: number;
+  travelMins: number;
+  travelStartAbs: number;
+}
+
+interface DayPartitionResult {
+  validBlocks: AbsBlock[];
+  rawGroups: AbsBlock[][];
+  designatedBreaks: Array<{ startAbs: number; endAbs: number }>;
+  excludedTravelBlockIds: Set<string>;
+  excludedMessages: string[];
+}
+
+/**
+ * Executes Steps 1–3 of the deterministic daily pipeline:
+ * 1. Computes raw and net unpaid gaps between chronologically sorted REGULAR_CLIENT blocks.
+ * 2. Partitions the day by up to the 2 longest unpaid broken shift breaks (>60m) into 1..3 Periods of Work (Cl 18(e)(ii)(D)).
+ * 3. Marks travel inside any designated unpaid broken shift break as UNPAID_BREAK_TRAVEL (0h, excluded from Period & mileage, Cl 28(a)(i)).
+ */
+function partitionDayBlocks(
+  dayOrigin: number,
+  clientBlocks: AbsBlock[],
+  explicitTravelBlocks: AbsBlock[],
+  pendingPreTravels: PendingPreTravel[]
+): DayPartitionResult {
+  const sortedClients = [...clientBlocks].sort((a, b) => a.startAbs - b.startAbs);
+  const preTravelByBlockId = new Map<string, PendingPreTravel>();
+  for (const pt of pendingPreTravels) {
+    preTravelByBlockId.set(pt.block.id, pt);
+  }
+
+  // Step 1 & Step 2: Raw gap -> net unpaid gap -> designate up to 2 longest unpaid broken shift breaks
+  const unpaidGaps: Array<{ startAbs: number; endAbs: number; unpaidGapMinutes: number }> = [];
+  for (let i = 0; i < sortedClients.length - 1; i++) {
+    const curr = sortedClients[i];
+    const next = sortedClients[i + 1];
+    const rawGapMinutes = next.startAbs - curr.endAbs;
+    if (rawGapMinutes <= 0) continue;
+
+    let associatedTravelMins = 0;
+    for (const et of explicitTravelBlocks) {
+      const overlapStart = Math.max(curr.endAbs, et.startAbs);
+      const overlapEnd = Math.min(next.startAbs, et.endAbs);
+      if (overlapEnd > overlapStart) {
+        associatedTravelMins += overlapEnd - overlapStart;
+      }
+    }
+    const nextPreTravel = preTravelByBlockId.get(next.block.id);
+    if (nextPreTravel && nextPreTravel.travelStartAbs < next.startAbs) {
+      const overlapStart = Math.max(curr.endAbs, nextPreTravel.travelStartAbs);
+      if (next.startAbs > overlapStart) {
+        associatedTravelMins += next.startAbs - overlapStart;
+      }
+    }
+
+    const unpaidAfterTravel = Math.max(0, rawGapMinutes - associatedTravelMins);
+    // Standard <=60m unpaid meal breaks (Cl 24) and short inter-client transit slack do not split into a broken shift
+    if (unpaidAfterTravel > 60) {
+      unpaidGaps.push({
+        startAbs: curr.endAbs,
+        endAbs: next.startAbs,
+        unpaidGapMinutes: unpaidAfterTravel,
+      });
+    }
+  }
+
+  const designatedBreaks =
+    unpaidGaps.length === 0
+      ? []
+      : unpaidGaps.length === 1
+        ? [{ startAbs: unpaidGaps[0].startAbs, endAbs: unpaidGaps[0].endAbs }]
+        : [...unpaidGaps]
+            .sort((a, b) => b.unpaidGapMinutes - a.unpaidGapMinutes || a.startAbs - b.startAbs)
+            .slice(0, 2)
+            .map(({ startAbs, endAbs }) => ({ startAbs, endAbs }))
+            .sort((a, b) => a.startAbs - b.startAbs);
+
+  // Step 3: Filter pre-shift & explicit travel falling inside designated unpaid broken shift breaks
+  const excludedTravelBlockIds = new Set<string>();
+  const excludedMessages: string[] = [];
+  const validTravelBlocks: AbsBlock[] = [];
+
+  for (const pt of pendingPreTravels) {
+    const hitBreak = designatedBreaks.find(
+      (brk) => pt.travelStartAbs < brk.endAbs && pt.startAbs > brk.startAbs
+    );
+    if (hitBreak) {
+      excludedTravelBlockIds.add(pt.block.id);
+      const kmsExcluded = Math.max(0, pt.block.travelKms || 0);
+      excludedMessages.push(
+        `Clause 28(a)(i) UNPAID_BREAK_TRAVEL: Excluded ${formatDurationMinutes(
+          pt.travelMins
+        )} pre-shift travel before ${pt.block.startTime}${
+          kmsExcluded > 0 ? ` & ${kmsExcluded.toFixed(2)} km` : ''
+        } (within unpaid broken shift break ${formatMinutesToTime(
+          hitBreak.startAbs - dayOrigin
+        )}–${formatMinutesToTime(hitBreak.endAbs - dayOrigin)}).`
+      );
+      continue;
+    }
+
+    const travelRawHours = (pt.startAbs - pt.travelStartAbs) / 60;
+    if (travelRawHours > 0) {
+      validTravelBlocks.push({
+        block: {
+          ...pt.block,
+          id: `${pt.block.id}__pretravel`,
+          blockType: 'TRAVEL_BETWEEN_CLIENTS',
+          startTime: formatMinutesToTime(pt.travelStartAbs - pt.dayOrigin),
+          endTime: pt.block.startTime,
+          unpaidMealBreakMinutes: 0,
+          paidClientMealMinutes: 0,
+          hasClinicalAssistance: false,
+          isRecallOvertime: false,
+        },
+        dayIndex: pt.dayIndex,
+        startAbs: pt.travelStartAbs,
+        endAbs: pt.startAbs,
+        rawHours: travelRawHours,
+        workedHours: travelRawHours,
+      });
+    }
+  }
+
+  for (const et of explicitTravelBlocks) {
+    const hitBreak = designatedBreaks.find(
+      (brk) => et.startAbs < brk.endAbs && et.endAbs > brk.startAbs
+    );
+    if (hitBreak) {
+      excludedTravelBlockIds.add(et.block.id);
+      const kmsExcluded = Math.max(0, et.block.travelKms || 0);
+      excludedMessages.push(
+        `Clause 28(a)(i) UNPAID_BREAK_TRAVEL: Excluded ${formatDurationMinutes(
+          et.rawHours * 60
+        )} travel (${et.block.startTime}–${et.block.endTime})${
+          kmsExcluded > 0 ? ` & ${kmsExcluded.toFixed(2)} km` : ''
+        } (within unpaid broken shift break ${formatMinutesToTime(
+          hitBreak.startAbs - dayOrigin
+        )}–${formatMinutesToTime(hitBreak.endAbs - dayOrigin)}).`
+      );
+      continue;
+    }
+    validTravelBlocks.push(et);
+  }
+
+  const validBlocks = [...sortedClients, ...validTravelBlocks].sort(
+    (a, b) => a.startAbs - b.startAbs
+  );
+
+  // Partition valid blocks strictly at the designated broken shift break boundaries (0 -> 1, 1 -> 2, 2 -> 3 periods)
+  const rawGroups: AbsBlock[][] = [];
+  if (validBlocks.length > 0) {
+    if (designatedBreaks.length === 0) {
+      rawGroups.push(validBlocks);
+    } else {
+      const buckets: AbsBlock[][] = Array.from({ length: designatedBreaks.length + 1 }, () => []);
+      for (const b of validBlocks) {
+        let pIdx = 0;
+        while (pIdx < designatedBreaks.length && b.startAbs >= designatedBreaks[pIdx].endAbs) {
+          pIdx++;
+        }
+        buckets[pIdx].push(b);
+      }
+      for (const bucket of buckets) {
+        if (bucket.length > 0) {
+          rawGroups.push(bucket);
+        }
+      }
+    }
+  }
+
+  return {
+    validBlocks,
+    rawGroups,
+    designatedBreaks,
+    excludedTravelBlockIds,
+    excludedMessages,
+  };
+}
+
 export function calculateFortnight(
   fortnight: FortnightPeriod,
   config: PayrollConfig
@@ -527,6 +711,11 @@ export function calculateFortnight(
     Array<{ block: WorkBlock; hours: number }>
   >();
   const annualLeaveBlocksByDay = new Map<number, AbsBlock[]>();
+  const explicitTravelByDay = new Map<number, AbsBlock[]>();
+  const pendingPreTravelByDay = new Map<number, PendingPreTravel[]>();
+  const rawGroupsByDay = new Map<number, AbsBlock[][]>();
+  const excludedTravelBlockIds = new Set<string>();
+  const excludedMessagesByDay = new Map<number, string[]>();
   let qualifying24HrShiftsCount = 0;
 
   for (let d = 0; d < days.length; d++) {
@@ -568,42 +757,68 @@ export function calculateFortnight(
         qualifying24HrShiftsCount += 1;
       }
 
-      allAbsBlocks.push({
+      const absBlock: AbsBlock = {
         block,
         dayIndex: d,
         startAbs,
         endAbs,
         rawHours,
         workedHours,
-      });
+      };
 
-      // Pre-shift travel (minutes + seconds) occurring immediately before this shift
+      if (block.blockType === 'TRAVEL_BETWEEN_CLIENTS') {
+        const list = explicitTravelByDay.get(d) ?? [];
+        list.push(absBlock);
+        explicitTravelByDay.set(d, list);
+        continue;
+      }
+
+      allAbsBlocks.push(absBlock);
+
+      // Collect pre-shift travel to be filtered by Step 3 once broken shift breaks are known
       const travelMins =
         Math.max(0, block.travelMinutes || 0) + Math.max(0, block.travelSeconds || 0) / 60;
       if (block.blockType === 'REGULAR_CLIENT' && travelMins > 0) {
-        const travelStartAbs = Math.max(0, startAbs - travelMins);
-        const travelRawHours = (startAbs - travelStartAbs) / 60;
-        if (travelRawHours > 0) {
-          allAbsBlocks.push({
-            block: {
-              ...block,
-              id: `${block.id}__pretravel`,
-              blockType: 'TRAVEL_BETWEEN_CLIENTS',
-              startTime: formatMinutesToTime(travelStartAbs - dayOrigin),
-              endTime: block.startTime,
-              unpaidMealBreakMinutes: 0,
-              paidClientMealMinutes: 0,
-              hasClinicalAssistance: false,
-              isRecallOvertime: false,
-            },
+        const travelStartAbs = Math.max(dayOrigin, startAbs - travelMins);
+        if (startAbs > travelStartAbs) {
+          const list = pendingPreTravelByDay.get(d) ?? [];
+          list.push({
+            block,
             dayIndex: d,
-            startAbs: travelStartAbs,
-            endAbs: startAbs,
-            rawHours: travelRawHours,
-            workedHours: travelRawHours,
+            dayOrigin,
+            startAbs,
+            travelMins,
+            travelStartAbs,
           });
+          pendingPreTravelByDay.set(d, list);
         }
       }
+    }
+
+    // Run deterministic Steps 1–3 for Day d (REGULAR_CLIENT blocks only)
+    const dayClientBlocks = allAbsBlocks.filter(
+      (b) => b.dayIndex === d && b.block.blockType === 'REGULAR_CLIENT'
+    );
+    const dayExplicitTravel = explicitTravelByDay.get(d) ?? [];
+    const dayPendingPreTravel = pendingPreTravelByDay.get(d) ?? [];
+    const partition = partitionDayBlocks(
+      dayOrigin,
+      dayClientBlocks,
+      dayExplicitTravel,
+      dayPendingPreTravel
+    );
+
+    for (const tb of partition.validBlocks) {
+      if (tb.block.blockType === 'TRAVEL_BETWEEN_CLIENTS') {
+        allAbsBlocks.push(tb);
+      }
+    }
+    rawGroupsByDay.set(d, partition.rawGroups);
+    for (const id of partition.excludedTravelBlockIds) {
+      excludedTravelBlockIds.add(id);
+    }
+    if (partition.excludedMessages.length > 0) {
+      excludedMessagesByDay.set(d, partition.excludedMessages);
     }
   }
 
@@ -690,26 +905,11 @@ export function calculateFortnight(
   >();
 
   for (let d = 0; d < days.length; d++) {
-    const dayShiftBlocks = shiftTravelBlocks
-      .filter((b) => b.dayIndex === d)
-      .sort((a, b) => a.startAbs - b.startAbs);
+    const rawGroups = rawGroupsByDay.get(d) ?? [];
 
-    if (dayShiftBlocks.length === 0) {
+    if (rawGroups.length === 0) {
       periodsByDay.set(d, []);
       continue;
-    }
-
-    // Group into distinct periods (gaps > 60 mins split into broken shift periods)
-    const rawGroups: AbsBlock[][] = [[dayShiftBlocks[0]]];
-    for (let i = 1; i < dayShiftBlocks.length; i++) {
-      const prev = dayShiftBlocks[i - 1];
-      const curr = dayShiftBlocks[i];
-      const gapMins = curr.startAbs - prev.endAbs;
-      if (gapMins > 60) {
-        rawGroups.push([curr]);
-      } else {
-        rawGroups[rawGroups.length - 1].push(curr);
-      }
     }
 
     const isBrokenShift = rawGroups.length >= 2;
@@ -864,7 +1064,7 @@ export function calculateFortnight(
     const weekIdx = d < 7 ? 0 : 1;
     const dayLineItems: PayLineItem[] = [];
     const badges: string[] = [];
-    const autoDetectionMessages: string[] = [];
+    const autoDetectionMessages: string[] = [...(excludedMessagesByDay.get(d) ?? [])];
     const flags: AuditFlag[] = [];
 
     const dayPeriods = periodsByDay.get(d) ?? [];
@@ -1733,10 +1933,11 @@ export function calculateFortnight(
       );
     }
 
-    // Mileage & Commute >25km Rule (Rule 8)
+    // Mileage & Commute >25km Rule (Rule 8; exclude UNPAID_BREAK_TRAVEL kms per Cl 28(a)(i))
     const blockTravelKms = day.workBlocks.reduce(
       (sum, b) =>
-        (b.status ?? 'WORKED') === 'CLIENT_CANCELLED'
+        (b.status ?? 'WORKED') === 'CLIENT_CANCELLED' ||
+        excludedTravelBlockIds.has(b.id)
           ? sum
           : sum + Math.max(0, b.travelKms || 0),
       0
