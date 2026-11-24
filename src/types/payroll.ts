@@ -20,6 +20,7 @@ export type RemoteContext =
 export type WorkBlockStatus = 'WORKED' | 'CLIENT_CANCELLED';
 
 export interface PayrollConfig {
+  classification?: string; // e.g. "SW Level 2B Pay Point 2"
   employmentType: EmploymentType;
   contractedGuaranteedHours: number; // 0 to 76.0
   ordinaryRate: number; // default $37.73
@@ -234,5 +235,98 @@ export interface PayslipResult {
   qualifyingWeekendsWorked: number;
   qualifying24HrShiftsCount: number;
   discrepancyHints: DiscrepancyClauseHint[];
+}
+
+export type AuditUnitType = 'HOURS' | 'KMS' | 'SHIFTS' | 'NIGHTS' | 'WEEKS' | 'MEALS';
+
+export type AuditCategoryCode =
+  | 'ORDINARY_100'
+  | 'TRAVEL_TIME_ORDINARY'
+  | 'TRAVEL_TIME_AFTERNOON'
+  | 'TRAVEL_TIME_NIGHT'
+  | 'TRAVEL_TIME_SATURDAY'
+  | 'TRAVEL_TIME_SUNDAY'
+  | 'TRAVEL_TIME_PUBLIC_HOLIDAY'
+  | 'AFTERNOON_112_5'
+  | 'NIGHT_115'
+  | 'SATURDAY_150'
+  | 'SUNDAY_200'
+  | 'PUBLIC_HOLIDAY_250'
+  | 'PUBLIC_HOLIDAY_NOT_WORKED_100'
+  | 'MIN_ENGAGEMENT_TOPUP_2H'
+  | 'GUARANTEED_HOURS_TOPUP'
+  | 'CARE_24HR_155'
+  | 'OVERTIME_150'
+  | 'OVERTIME_200'
+  | 'PUBLIC_HOLIDAY_OT_250'
+  | 'BROKEN_SHIFT_OUTSIDE_12H_200'
+  | 'REST_BREACH_200'
+  | 'ANNUAL_LEAVE_BASE'
+  | 'ANNUAL_LEAVE_LOADING'
+  | 'ANNUAL_LEAVE_CASHED_OUT'
+  | 'BROKEN_SHIFT_1_BREAK'
+  | 'BROKEN_SHIFT_2_BREAKS'
+  | 'SLEEPOVER_ALLOWANCE'
+  | 'MILEAGE_KM'
+  | 'ON_CALL_WEEKDAY'
+  | 'ON_CALL_WEEKEND_PH'
+  | 'UNIFORM_ALLOWANCE'
+  | 'LAUNDRY_ALLOWANCE'
+  | 'FIRST_AID_ALLOWANCE'
+  | 'OT_MEAL_ALLOWANCE'
+  | 'CLINICAL_ASSISTANCE_ALLOWANCE'
+  | 'SUPERANNUATION';
+
+export interface AuditDailyBreakdown {
+  date: string;
+  units: number;
+  amount: number;
+  auditNote: string;
+}
+
+export interface AuditLineItem {
+  categoryCode: AuditCategoryCode;
+  label: string;
+  eaClause: string;
+  isTaxable: boolean;
+  attractsSuper: boolean;
+  units: number;
+  unitType: AuditUnitType;
+  rate: number;
+  multiplier: number;
+  totalAmount: number;
+  dailyBreakdown: AuditDailyBreakdown[];
+}
+
+export interface AuditPayPeriodSummary {
+  expectedGrossTotal: number;
+  expectedTaxableGross: number;
+  expectedNonTaxableAllowances: number;
+  expectedSuperannuation: number;
+  expectedOrdinaryHours: number;
+  expectedTravelHours: number;
+  expectedOvertimeHours: number;
+  expectedLeaveHours: number;
+}
+
+export interface AuditPayPeriod {
+  periodId: string;
+  startDate: string;
+  endDate: string;
+  summary: AuditPayPeriodSummary;
+  lineItems: AuditLineItem[];
+}
+
+export interface AuditExpectedExport {
+  schemaVersion: '1.0.0';
+  exportedAt: string;
+  employeeProfile: {
+    classification: string;
+    employmentType: EmploymentType;
+    contractedFortnightHours: number;
+    baseHourlyRate: number;
+    superannuationRate: number;
+  };
+  payPeriods: AuditPayPeriod[];
 }
 

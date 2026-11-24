@@ -33,6 +33,7 @@ function splitDelimitedLine(line: string, delimiter: '\t' | ','): string[] {
   }
   cells.push(current.trim());
   return cells;
+}
 
 function normalizeHeader(h: string): string {
   return h.toLowerCase().replace(/[^a-z0-9]/g, '');

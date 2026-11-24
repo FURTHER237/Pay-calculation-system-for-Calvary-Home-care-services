@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   DollarSign,
+  FileJson,
   FileText,
   Scale,
   ShieldCheck,
@@ -24,6 +25,8 @@ interface PayslipDashboardProps {
   onToggleShiftworkerForLeave: (val: boolean) => void;
   onToggleTaxFreeThreshold: (val: boolean) => void;
   onSelectDay: (dayIndex: number) => void;
+  onOpenAuditExport: () => void;
+  savedPeriodCount: number;
 }
 
 export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
@@ -36,6 +39,8 @@ export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
   onToggleShiftworkerForLeave,
   onToggleTaxFreeThreshold,
   onSelectDay,
+  onOpenAuditExport,
+  savedPeriodCount,
 }) => {
   const [activeTab, setActiveTab] = useState<'PAYSLIP' | 'CHECKER' | 'AUDIT'>('PAYSLIP');
   const [actualPaidInput, setActualPaidInput] = useState<string>('');
@@ -395,10 +400,20 @@ export const PayslipDashboard: React.FC<PayslipDashboardProps> = ({
               14-Day Audit Log
             </button>
           </div>
-          <span className="text-[11px] text-slate-500">
-            OTE Base: <strong>${payslip.oteBase.toFixed(2)}</strong> • Super Rate:{' '}
-            <strong>{(config.superRate * 100).toFixed(1)}%</strong>
-          </span>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-[11px] text-slate-500">
+              OTE Base: <strong>${payslip.oteBase.toFixed(2)}</strong> • Super Rate:{' '}
+              <strong>{(config.superRate * 100).toFixed(1)}%</strong>
+            </span>
+            <button
+              type="button"
+              onClick={onOpenAuditExport}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition hover:bg-emerald-700"
+            >
+              <FileJson className="h-3.5 w-3.5" />
+              Export Audit JSON ({savedPeriodCount} {savedPeriodCount === 1 ? 'period' : 'periods'})
+            </button>
+          </div>
         </div>
 
         {/* Tab 1: Itemized Payslip */}

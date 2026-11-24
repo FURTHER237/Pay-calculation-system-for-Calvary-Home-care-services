@@ -2,6 +2,7 @@ import React, { useRef } from 'react';
 import {
   Calendar,
   Download,
+  FileJson,
   FileSpreadsheet,
   FlaskConical,
   Printer,
@@ -14,12 +15,14 @@ import { PayrollConfig } from '../types/payroll';
 interface HeaderBarProps {
   startDate: string;
   config: PayrollConfig;
+  savedPeriodCount: number;
   onChangeStartDate: (newStartDate: string) => void;
   onLoadDemo: () => void;
   onClearFortnight: () => void;
   onExportJson: () => void;
-  onImportJson: (file: File) => void;
+  onImportFiles: (files: FileList) => void;
   onExportCsv: () => void;
+  onOpenAuditExport: () => void;
   onPrint: () => void;
   onOpenSettings: () => void;
 }
@@ -27,12 +30,14 @@ interface HeaderBarProps {
 export const HeaderBar: React.FC<HeaderBarProps> = ({
   startDate,
   config,
+  savedPeriodCount,
   onChangeStartDate,
   onLoadDemo,
   onClearFortnight,
   onExportJson,
-  onImportJson,
+  onImportFiles,
   onExportCsv,
+  onOpenAuditExport,
   onPrint,
   onOpenSettings,
 }) => {
@@ -110,12 +115,12 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             accept=".json,.csv,.tsv,.txt,application/json,text/csv,text/tab-separated-values"
             className="hidden"
             onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) {
-                onImportJson(file);
+              if (e.target.files && e.target.files.length > 0) {
+                onImportFiles(e.target.files);
                 e.target.value = '';
               }
             }}
@@ -129,6 +134,21 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           >
             <Download className="h-3.5 w-3.5 text-slate-500" />
             JSON
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenAuditExport}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100"
+            title="Export Audit Data (audit_expected.json)"
+          >
+            <FileJson className="h-3.5 w-3.5 text-emerald-600" />
+            Audit JSON
+            {savedPeriodCount > 1 && (
+              <span className="rounded-full bg-emerald-600 px-1.5 py-0.2 text-[10px] font-bold text-white">
+                {savedPeriodCount}
+              </span>
+            )}
           </button>
 
           <button

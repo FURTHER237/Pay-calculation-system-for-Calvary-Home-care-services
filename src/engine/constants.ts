@@ -8,6 +8,7 @@ export const RATE_PRESETS = [
 ] as const;
 
 export const DEFAULT_PAYROLL_CONFIG: PayrollConfig = {
+  classification: 'SW Level 2B Pay Point 2',
   employmentType: 'PT',
   contractedGuaranteedHours: 0,
   ordinaryRate: 37.73,

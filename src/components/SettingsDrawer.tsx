@@ -61,6 +61,22 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
               Employment &amp; Base Rate
             </h3>
 
+            <label className="flex flex-col gap-1 text-xs">
+              <span className="font-medium text-slate-600">Employee Classification</span>
+              <input
+                type="text"
+                value={config.classification ?? DEFAULT_PAYROLL_CONFIG.classification ?? ''}
+                onChange={(e) =>
+                  onChangeConfig({
+                    ...config,
+                    classification: e.target.value,
+                  })
+                }
+                placeholder="e.g. SW Level 2B Pay Point 2"
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-900"
+              />
+            </label>
+
             <div className="grid grid-cols-2 gap-2">
               {(['PT', 'FT'] as EmploymentType[]).map((type) => (
                 <button
